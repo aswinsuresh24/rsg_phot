@@ -1,0 +1,1 @@
+Generate synthetic red supergiant spectra and photometry based on [charliekilpatrick/progenitors](https://github.com/charliekilpatrick/progenitors/tree/main)
