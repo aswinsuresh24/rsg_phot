@@ -11,7 +11,7 @@ import astropy.constants as const
 from scipy import interpolate
 from scipy.integrate import simpson
 import matplotlib.pyplot as plt
-import dust
+from dust import dustgen
 
 class rsg_phot(object):
     def __init__(self, verbose=True, interpolate=True):
@@ -161,8 +161,9 @@ class rsg_phot(object):
         
     def create_rsg(self, tau_V, lum, temp, dust_temp, sptype='all'):
         # RSG model takes luminosity in Lsol as input
+        dust_model = dustgen()
         scaled_lum = 10**lum
-        spec = dust.get_ext_bb((tau_V, scaled_lum, temp, dust_temp),
+        spec = dust_model.get_ext_bb((tau_V, scaled_lum, temp, dust_temp),
             sptype=sptype)
 
         return(spec)
