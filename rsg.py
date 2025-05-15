@@ -49,12 +49,12 @@ class rsg_phot(object):
         self.mist_masses = list(np.arange(7.5, 40.0, 0.5))
         add_masses = list(np.arange(8.0,15.0,0.1))
         add_masses = [int(m*10.0)*1.0/10.0 for m in add_masses]
-        self.mist_masses = np.array(np.unique(self.mist_masses+add_masses))
+        self.mist_masses = np.array(np.unique(self.mist_masses+add_masses))*u.M_sun
         self.metallicity = 0.014 # Metallicity in terms of Z
 
         # Distance and uncertainty in Mpc
-        self.distance = [12.3, 1.8]
-        self.dm = 5.0 * np.log10(self.distance[0]) + 25.0
+        self.distance = [12.3, 1.8] * u.Mpc
+        self.dm = 5.0 * np.log10(self.distance[0].value) + 25.0
 
         # For extinction likelihood values to use as a prior for modeling
         self.extinction = {
@@ -68,16 +68,16 @@ class rsg_phot(object):
         self.rv = []
 
         # Default wavelength binset in angstroms for pysynphot
-        self.waves = 3500.0 + 10.0*np.arange(9650)
+        self.waves = (3500.0 + 10.0*np.arange(9650)) * u.Angstrom
         self.bandpasses = None
 
         self.bounds = {
             'luminosity': [-1.0, 7.0],
-            'temperature': [800., 100000.],
+            'temperature': [800., 100000.] * u.K,
             'tau_V': [0.01, 6.0],
-            'dust_temp': [200., 2000.],
-            'mass': [0.1, 120.0],
-            'age': [1.0e4, 13.0e9],
+            'dust_temp': [200., 2000.] * u.K,
+            'mass': [0.1, 120.0] * u.M_sun,
+            'age': [1.0e4, 13.0e9] * u.yr,
             'period': [0.0, 4.0], # in log10(days)
             'ratio': [0.1, 0.9],
             'Av': [0.0, 6.0],
@@ -101,12 +101,12 @@ class rsg_phot(object):
         base = os.path.split(f)[1]
         name = inst.lower()+'_'+filt.lower()
         hdu = fits.open(f)
-        wave = np.array([float(el[0])*1.0e4 for el in hdu[1].data])
+        wave = np.array([float(el[0])*1.0e4 for el in hdu[1].data]) * u.Angstrom
             
         tran = np.array([float(el[1]) for el in hdu[1].data])
             
         # Only consider wavelengths < 30 microns
-        mask = wave < 30.0*1.0e4
+        mask = wave < 30.0*1.0e4 * u.Angstrom
         wave = wave[mask]
         tran = tran[mask]
             
@@ -159,19 +159,18 @@ class rsg_phot(object):
 
         return(mags)
         
-    def create_rsg(self, tau_V, lum, temp, dust_temp, sptype='all'):
+    def create_rsg(self, tau_V, lum, temp, dust_temp, dist, sptype='all'):
         # RSG model takes luminosity in Lsol as input
-        dust_model = dustgen()
-        scaled_lum = 10**lum
-        spec = dust_model.get_ext_bb((tau_V, scaled_lum, temp, dust_temp),
-            sptype=sptype)
+        dust_model = dustgen(dist=dist)
+        scaled_lum = 10**(lum.to(u.Lsun)).value
+        spec = dust_model.get_ext_bb((tau_V, scaled_lum, temp, dust_temp), sptype=sptype)
 
         return(spec)
         
-    def compute_rsg_mag(self, inst_filt, tau_V, lum, temp, dust_temp):
+    def compute_rsg_mag(self, inst_filt, tau_V, lum, temp, dust_temp, dist):
 
         # Scale spectrum up to input luminosity
-        sp = self.create_rsg(tau_V, lum, temp, dust_temp)
+        sp = self.create_rsg(tau_V, lum, temp, dust_temp, dist)
 
         # Get bandpasses and compute mags
         bandpasses = self.get_bandpasses(inst_filt)

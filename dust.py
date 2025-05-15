@@ -11,20 +11,22 @@ import astropy.constants as const
 from astropy.io import ascii
 from scipy import interpolate
 from scipy.integrate import simpson
-
+ 
 class dustgen(object):
-    def __init__(self, interp_method='cubic'):
+    def __init__(self, dist=10*u.Mpc, interp_method='cubic'):
 
         self.dustdir = 'data/dust/'
+        self.dist = dist
 
         # RSG models for range of temperatures
         self.temp = np.array([2600,2800,3000,3200,3300,3400,3500,3600,3700,
-                              3800,3900,4000,4250,4500,5000,6000,7000,8000])
+                              3800,3900,4000,4250,4500,5000,6000,7000,8000]) * u.K
 
         # This is the total integrated flux of a source with Lum = 1 Lsun in units of
         # erg/s/cm2.  Used to renormalize the RSG spectrum.  This is equivalent to
         # 3.839e33/(4 * pi * (10 * 3.08568025e18)^2) for 1 Lsol at 10 pc.
-        self.FLUX_SCALE = 3.22398177e-7
+        # self.FLUX_SCALE = 3.22398177e-7
+        self.FLUX_SCALE = ((1 * u.L_sun) / (4 * np.pi * self.dist**2)).to(u.erg/u.s/u.cm**2)
 
         # Dust-to-gas mass ratio assumption
         self.DUST_TO_GAS = 0.01
@@ -34,8 +36,8 @@ class dustgen(object):
         self.kappa = np.loadtxt(self.dustdir+'dust01_trans.dat')
         self.kappa = self.kappa/np.max(self.kappa)
         self.wavelength = np.loadtxt(self.dustdir+'wavelength.dat')
-        self.wavelength = self.rebin(self.wavelength, 7748)
-        self.rsg_10 = interpolate.RegularGridInterpolator((self.wavelength, self.temp), self.data10.T, method=interp_method, bounds_error=False)
+        self.wavelength = self.rebin(self.wavelength, 7748) * u.Angstrom
+        self.rsg_10 = interpolate.RegularGridInterpolator((self.wavelength.value, self.temp.value), self.data10.T, method=interp_method, bounds_error=False)
 
         # to interpolate
         # xnew, ynew = np.meshgrid(wavelength_array, temp_array, indexing='ij', sparse=True)
@@ -76,7 +78,7 @@ class dustgen(object):
 
     def get_rsg(self, scale, temp, model='10'):
 
-        wavelength_grid, temp_grid = np.meshgrid(self.wavelength, temp, indexing='ij', sparse=True)
+        wavelength_grid, temp_grid = np.meshgrid(self.wavelength.value, temp.value, indexing='ij', sparse=True)
         if model == '10': 
             flux = self.rsg_10((wavelength_grid, temp_grid))
             flux = flux.flatten()
@@ -85,7 +87,7 @@ class dustgen(object):
         normalize = simpson(flux, x=wavelength_grid.flatten())
         # Renormalize the RSG spectrum so it's in units of erg/s/cm2/angstrom for
         # synphot to interpret
-        flux = scale * self.FLUX_SCALE * flux/normalize
+        flux = scale * self.FLUX_SCALE * flux/normalize / u.Angstrom
 
         return flux
 
@@ -95,7 +97,7 @@ class dustgen(object):
         flux = self.get_rsg(p[1], p[2], model=rsg_model)
 
         if masked and len(w)!=5157: #5157?
-            mask = (w > 3500.0) & (w < 1.0e5) #why limits?
+            mask = (w > 3500.0*u.Angstrom) & (w < 1.0e5*u.Angstrom) #why limits?
             kappa = np.loadtxt(self.dustdir+'dust01_trans.dat') #should this be normalized?
             w = w[mask]
             flux = flux[mask]
@@ -105,7 +107,7 @@ class dustgen(object):
             sp = synphot.SourceSpectrum(Empirical1D, points=w, lookup_table=flux)
             return sp
 
-        a_dust = self.get_dust(w, p[0], model=dust_model)
+        a_dust = self.get_dust(w.value, p[0], model=dust_model)
         obsflux = flux * 10**(-0.4*a_dust)
         bb_scale = simpson(flux-obsflux, x=w)
 
@@ -113,23 +115,25 @@ class dustgen(object):
             sp = synphot.SourceSpectrum(Empirical1D, points=w, lookup_table=obsflux)
             return sp 
 
-        bb = kappa * (w*1.0e-5)**-5 * 1.0/(np.exp(143843215.0/(w*p[3]))-1.0)
+        # bb = kappa * (w.value*1.0e-5)**-5 * 1.0/(np.exp(143843215.0/(w.value*p[3].value))-1.0) * u.erg/u.s/u.cm**2/u.Angstrom
+        bb = kappa * ((8 * np.pi**2 * const.h * const.c**2) / (w**5)) * (1 / (np.exp(const.h * const.c / (w * const.k_B * p[3])) - 1))
+        bb = bb.to(u.erg/u.s/u.cm**2/u.Angstrom)
         # We also need to renormalize the bb flux.  The fraction of total luminosity
         # in the bb part of the spectrum is "scale".  So here we can simply multiply
         # by p[1] * FLUX_SCALE
         normalize_bb = simpson(bb, x=w)
         bb = bb_scale * bb / normalize_bb
+        energy = (const.h*const.c/w).to(u.erg)
 
         if sptype=='b' or sptype=='bb' or sptype=='dust' or sptype=='blackbody':
-            sp = synphot.SourceSpectrum(Empirical1D, points=w, lookup_table=bb)
+            sp = synphot.SourceSpectrum(Empirical1D, points=w, lookup_table=(bb/energy).value)
         elif sptype=='ss' or sptype=='scaled_star':
-            sp = synphot.SourceSpectrum(Empirical1D, points=w, lookup_table=obsflux)
+            sp = synphot.SourceSpectrum(Empirical1D, points=w, lookup_table=(obsflux/energy).value)
         else:
-            sp = synphot.SourceSpectrum(Empirical1D, points=w, lookup_table=obsflux + bb)
-            mask = sp(sp.waveset) < 0
+            sp = synphot.SourceSpectrum(Empirical1D, points=w, lookup_table=((obsflux + bb)/energy).value)
 
         if sptype=='all':
-            Lsol = simpson(sp(sp.waveset), x=sp.waveset)*4*np.pi*(10*3.08568025e18)**2/(3.839e33)
+            Lsol = simpson(sp(sp.waveset)*energy, x=sp.waveset) * 4 * np.pi * (self.dist.to(u.cm).value)**2/((1*u.L_sun).cgs.value)
             try:
                 assert np.abs((Lsol-p[1])/p[1]) < 3.0e-2
             except AssertionError:
