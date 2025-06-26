@@ -97,7 +97,7 @@ def map_columns(columns):
     
     return col_dict, filters, filt_dict
 
-def save_photfiles(photfile_path, outdir, obj, chunksize = 100000):
+def save_photfiles(photfile_path, outdir, chunksize = 100000):
     """
     save photometry files with cuts applied to smaller csv files
 
@@ -116,7 +116,7 @@ def save_photfiles(photfile_path, outdir, obj, chunksize = 100000):
     -------
     None
     """
-    photfiles = sorted(glob.glob(os.path.join(photfile_path, '*phot')))[-1:]
+    photfiles = sorted(glob.glob(os.path.join(photfile_path, '*phot')))
     for i, photfile in enumerate(photfiles):
         column_file = photfile + '.columns'
         #map columns to indices
@@ -128,10 +128,13 @@ def save_photfiles(photfile_path, outdir, obj, chunksize = 100000):
         
         for j, _df in tqdm(enumerate(photdf)):
             #apply cuts
-            cuts = (_df[col_idx['SNR']] >= 10) & \
-                    ((_df[col_idx['Sharpness']])**2 <= 0.01) & \
-                    (_df[col_idx['Crowding']] <= 0.5) & \
-                    (_df[col_idx['Type']] <=2)
+            cuts = (_df[col_idx['SNR']] >= 5) & \
+                    ((_df[col_idx['Sharpness']])**2 <= 0.04) & \
+                    (_df[col_idx['Crowding']] <= 1.5) & \
+                    (_df[col_idx['Type']] <= 2)
             _df = _df[cuts]
-            _df.to_csv(f'{outdir}/{obj}_{i}_{j}.csv', mode = 'a', header = False, index = False)
+            _df = _df[list(col_idx.values())]
+            _df.columns = list(col_idx.keys())
+            _df.to_csv(f"{outdir}/{os.path.basename(photfile).split('.')[0]}_{j}.csv", 
+                       mode = 'a', header = True, index = False)
             
