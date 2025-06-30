@@ -54,7 +54,7 @@ class dustgen(object):
     
     def get_avg2(self, x, p):
         l=x*1.0e-4
-        t=p/10.0
+        t=p[0]/10.0
         tgra1 = (0.500446 + 1.795729*t - 1.877658*t*t + 0.852820*t**3 - 0.141635*t**4)
         tgra2 = (4.318269 - 14.236698*t + 13.804110*t*t - 5.991369*t**3+0.959539*t**4)/l
         tgra3 = (-5.114167 + 32.462564*t - 26.895305*t*t + 10.197398*t**3 - 1.414338*t**4)/l**2
@@ -64,13 +64,27 @@ class dustgen(object):
         agraphite2 = (tgra1 + tgra2 + tgra3 + tgra4 + tgra5 + tgra6)*t*l**(-1.375229)
 
         return agraphite2
+    
+    def get_avs2(self, x, p):
+        l=x*1.0e-4
+        t=p[0]/10.0
+        tsil1 = (0.437549 - 0.446323*t + 0.648423*t*t - 0.321970*t**3+0.055555*t**4)
+        tsil2 = (-0.486741 + 4.034854*t - 5.530127*t*t + 2.711095*t**3 - 0.469112*t**4)/l
+        tsil3 = (1.166512 - 12.015845*t + 14.917191*t*t - 7.058630*t**3+1.204954*t**4)/l**2
+        tsil4 = (-0.655682 + 13.849514*t - 14.342367*t*t + 6.165157*t**3 - 0.984406*t**4)/l**3
+        tsil5 = (0.169689 - 4.956815*t + 4.137525*t*t - 1.419899*t**3+0.176166*t**4)/l**4
+        tsil6 = (-0.016829 + 0.582619*t - 0.381166*t*t + 0.083593*t**3 - 0.002153*t**4)/l**5
+        asilicate2 = (tsil1 + tsil2 + tsil3 + tsil4 + tsil5 + tsil6)*t*l**(-0.642318)
 
-    def get_dust(self, x, p, model='g2'):
+        return(asilicate2)
 
+    def get_dust(self, x, p, model='s2'):
         if model=='g2': 
             dust = self.get_avg2(x, p)
+        elif model=='s2': 
+            dust = self.get_avs2(x, p)
         else:
-            raise NotImplementedError('Only model "g2" is currently available')
+            raise NotImplementedError('Only model "g2" and "s2" are currently available')
 
         dust[np.where(dust < 0)] = 0
 
@@ -107,7 +121,7 @@ class dustgen(object):
             sp = synphot.SourceSpectrum(Empirical1D, points=w, lookup_table=flux)
             return sp
 
-        a_dust = self.get_dust(w.value, p[0], model=dust_model)
+        a_dust = self.get_dust(w.value, p, model=dust_model)
         obsflux = flux * 10**(-0.4*a_dust)
         bb_scale = simpson(flux-obsflux, x=w)
 

@@ -159,18 +159,18 @@ class rsg_phot(object):
 
         return(mags)
         
-    def create_rsg(self, tau_V, lum, temp, dust_temp, dist, sptype='all'):
+    def create_rsg(self, tau_V, lum, temp, dust_temp, dist, dust_model, sptype='all'):
         # RSG model takes luminosity in Lsol as input
-        dust_model = dustgen(dist=dist)
+        rsg_model = dustgen(dist=dist)
         scaled_lum = 10**(lum.to(u.Lsun)).value
-        spec = dust_model.get_ext_bb((tau_V, scaled_lum, temp, dust_temp), sptype=sptype)
+        spec = rsg_model.get_ext_bb((tau_V, scaled_lum, temp, dust_temp), dust_model=dust_model, sptype=sptype)
 
         return(spec)
         
-    def compute_rsg_mag(self, inst_filt, tau_V, lum, temp, dust_temp, dist):
+    def compute_rsg_mag(self, inst_filt, tau_V, lum, temp, dust_temp, dist, dust_model):
 
         # Scale spectrum up to input luminosity
-        sp = self.create_rsg(tau_V, lum, temp, dust_temp, dist)
+        sp = self.create_rsg(tau_V, lum, temp, dust_temp, dist, dust_model)
 
         # Get bandpasses and compute mags
         bandpasses = self.get_bandpasses(inst_filt)
