@@ -77,14 +77,44 @@ class dustgen(object):
         asilicate2 = (tsil1 + tsil2 + tsil3 + tsil4 + tsil5 + tsil6)*t*l**(-0.642318)
 
         return(asilicate2)
+    
+    def get_avs10(self, x, p):
+        l=x*1.0e-4
+        t=p[0]/10.0
+        tsil1 = (0.197398 - 0.293417*t + 0.192686*t*t - 0.041375*t**3+0.000902*t**4)
+        tsil2 = (0.093593 + 2.491030*t - 1.453387*t*t + 0.239280*t**3+0.013273*t**4)/l
+        tsil3 = (0.357331 - 6.883382*t + 3.239407*t*t - 0.198182*t**3 - 0.121949*t**4)/l**2
+        tsil4 = (0.022567 + 7.169214*t - 1.884278*t*t - 0.728088*t**3+0.309664*t**4)/l**3
+        tsil5 = (-0.065599 - 2.173130*t - 0.305525*t*t + 0.839291*t**3 - 0.223389*t**4)/l**4
+        tsil6 = (0.012188 + 0.216324*t + 0.133118*t*t - 0.153598*t**3+0.036469*t**4)/l**5
+        asilicate10 = (tsil1 + tsil2 + tsil3 + tsil4 + tsil5 + tsil6)*t*l**(-0.323043)
+
+        return(asilicate10)
+    
+    def get_avg10(self, x, p):
+        l=x*1.0e-4
+        t=p[0]/10.0
+        tgra1 = (0.760499 + 0.879164*t - 0.350748*t*t - 0.039612*t**3+0.034161*t**4)
+        tgra2 = (4.061343 - 7.166933*t + 2.791544*t*t + 0.214647*t**3 - 0.233685*t**4)/l
+        tgra3 = (-5.133851 + 16.344656*t - 4.283100*t*t - 1.764900*t**3+0.780217*t**4)/l**2
+        tgra4 = (3.387184 - 10.066016*t - 1.260999*t*t + 4.103272*t**3 - 1.160204*t**4)/l**3
+        tgra5 = (-1.052057 + 2.479576*t + 1.618868*t*t - 2.030708*t**3+0.516503*t**4)/l**4
+        tgra6 = (0.120327 - 0.214118*t - 0.293914*t*t + 0.295687*t**3 - 0.071840*t**4)/l**5
+        agraphite10 = (tgra1 + tgra2 + tgra3 + tgra4 + tgra5 + tgra6)*t*l**(-1.475236)
+
+        return(agraphite10)
 
     def get_dust(self, x, p, model='s2'):
         if model=='g2': 
             dust = self.get_avg2(x, p)
+        elif model=='g10': 
+            dust = self.get_avg10(x, p)
         elif model=='s2': 
             dust = self.get_avs2(x, p)
+        elif model=='s10': 
+            dust = self.get_avs10(x, p)
         else:
-            raise NotImplementedError('Only model "g2" and "s2" are currently available')
+            raise NotImplementedError(f'Model {model} is invallid. "g2", "g10, "s2" and "s10" are currently available')
 
         dust[np.where(dust < 0)] = 0
 
@@ -115,7 +145,7 @@ class dustgen(object):
             kappa = np.loadtxt(self.dustdir+'dust01_trans.dat') #should this be normalized?
             w = w[mask]
             flux = flux[mask]
-            kappa = kappa[mask]
+            kappa = self.kappa[mask]
 
         if sptype=='i' or sptype=='intrinsic':
             sp = synphot.SourceSpectrum(Empirical1D, points=w, lookup_table=flux)
