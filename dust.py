@@ -11,6 +11,7 @@ import astropy.constants as const
 from astropy.io import ascii
 from scipy import interpolate
 from scipy.integrate import simpson
+import subprocess
  
 class dustgen(object):
     def __init__(self, dist=10*u.Mpc, interp_method='cubic'):
@@ -25,7 +26,6 @@ class dustgen(object):
         # This is the total integrated flux of a source with Lum = 1 Lsun in units of
         # erg/s/cm2.  Used to renormalize the RSG spectrum.  This is equivalent to
         # 3.839e33/(4 * pi * (10 * 3.08568025e18)^2) for 1 Lsol at 10 pc.
-        # self.FLUX_SCALE = 3.22398177e-7
         self.FLUX_SCALE = ((1 * u.L_sun) / (4 * np.pi * self.dist**2)).to(u.erg/u.s/u.cm**2)
 
         # Dust-to-gas mass ratio assumption
@@ -114,7 +114,7 @@ class dustgen(object):
         elif model=='s10': 
             dust = self.get_avs10(x, p)
         else:
-            raise NotImplementedError(f'Model {model} is invallid. "g2", "g10, "s2" and "s10" are currently available')
+            raise NotImplementedError(f'Model {model} is invalid. "g2", "g10, "s2" and "s10" are currently available')
 
         dust[np.where(dust < 0)] = 0
 
@@ -140,9 +140,9 @@ class dustgen(object):
         w = self.wavelength
         flux = self.get_rsg(p[1], p[2], model=rsg_model)
 
-        if masked and len(w)!=5157: #5157?
-            mask = (w > 3500.0*u.Angstrom) & (w < 1.0e5*u.Angstrom) #why limits?
-            kappa = np.loadtxt(self.dustdir+'dust01_trans.dat') #should this be normalized?
+        if masked and len(w)!=5157: 
+            mask = (w > 3500.0*u.Angstrom) & (w < 1.0e5*u.Angstrom) 
+            kappa = np.loadtxt(self.dustdir+'dust01_trans.dat')
             w = w[mask]
             flux = flux[mask]
             kappa = self.kappa[mask]
@@ -159,7 +159,6 @@ class dustgen(object):
             sp = synphot.SourceSpectrum(Empirical1D, points=w, lookup_table=obsflux)
             return sp 
 
-        # bb = kappa * (w.value*1.0e-5)**-5 * 1.0/(np.exp(143843215.0/(w.value*p[3].value))-1.0) * u.erg/u.s/u.cm**2/u.Angstrom
         bb = kappa * ((8 * np.pi**2 * const.h * const.c**2) / (w**5)) * (1 / (np.exp(const.h * const.c / (w * const.k_B * p[3])) - 1))
         bb = bb.to(u.erg/u.s/u.cm**2/u.Angstrom)
         # We also need to renormalize the bb flux.  The fraction of total luminosity
@@ -188,3 +187,192 @@ class dustgen(object):
                 sys.exit()
 
         return sp
+    
+
+class dusty_gen(object):
+    def __init__(self, 
+                 dist=10*u.Mpc, 
+                 interp_method='cubic', 
+                 rewrite_lambda_grid=False,
+                 dusty_grid_path='/Users/aswin/rsg_phot/data/dusty_grid'):
+
+        self.dustdir = 'data/dust/'
+        self.dist = dist
+
+        # This is the total integrated flux of a source with Lum = 1 Lsun in units of
+        # erg/s/cm2.  Used to renormalize the RSG spectrum.  This is equivalent to
+        # 3.839e33/(4 * pi * (10 * 3.08568025e18)^2) for 1 Lsol at 10 pc.
+        self.FLUX_SCALE = ((1 * u.L_sun) / (4 * np.pi * self.dist**2)).to(u.erg/u.s/u.cm**2)
+
+        # Dust-to-gas mass ratio assumption
+        self.DUST_TO_GAS = 0.01
+
+        # Read MARCS models
+        # RSG models for range of temperatures
+        self.rsg_temp = np.array([2600,2800,3000,3200,3300,3400,3500,3600,3700,
+                        3800,3900,4000,4250,4500,5000,6000,7000,8000]) * u.K
+        self.rsg_data = np.loadtxt(self.dustdir+'data10.dat', unpack=True, dtype=float)
+        self.rsg_wavelength = np.loadtxt(self.dustdir+'wavelength.dat')
+        self.rsg_wavelength = self.rebin(self.rsg_wavelength, 7748) * u.Angstrom
+        self.rsg_10 = interpolate.RegularGridInterpolator((self.rsg_wavelength.value, self.rsg_temp.value), self.rsg_data.T, method=interp_method, bounds_error=False)
+
+        # DUSTY setup 
+        self.dusty_basedir = '/Users/aswin/dustyV2' #os.environ['DUSTY_PATH'] #full path
+        self.dusty_datadir = dusty_grid_path # full path
+        self.dusty_lambda_grid = list(np.logspace(np.log10(0.01), np.log10(0.6), num = 100)) +\
+                                 list(np.logspace(np.log10(0.6), np.log10(4.5), num = 1000)) +\
+                                 list(np.logspace(np.log10(4.5), np.log10(15), num = 200)) +\
+                                 list(np.logspace(np.log10(15), np.log10(3.6e4), num = 200))
+        self.dusty_lambda_grid = np.array(self.dusty_lambda_grid)
+        self.validate_dusty_dir(rewrite_lambda_grid)
+        self.dust_comp = 'sil'
+        self.shell_thickness = 2
+
+    def rebin(self, a, newshape):
+        newarray = np.zeros(newshape)
+        curr = 0
+        for i in np.arange(newshape):
+            s = slice(curr, curr+int(a.shape[0]/newshape), 1)
+            newarray[i] = np.mean(a[s])
+            curr += int(a.shape[0]/newshape)
+        return newarray
+    
+    def get_rsg(self, temp, model='10'):
+
+        wavelength_grid, temp_grid = np.meshgrid(self.rsg_wavelength.value, temp.value, indexing='ij', sparse=True)
+        if model == '10': 
+            flux = self.rsg_10((wavelength_grid, temp_grid))
+            flux = flux.flatten()
+        else: 
+            raise NotImplementedError('Only model "10" is currently available')
+
+        return flux
+    
+    def validate_dusty_dir(self, rewrite_lambda=False):
+        if rewrite_lambda:
+            gridfile = os.path.join(self.dusty_basedir, 'lambda_grid.dat')
+            parfile = os.path.join(self.dusty_basedir, 'userpar.inc')
+            nline = f'npL = {len(self.dusty_lambda_grid)}\n'
+
+            # edit wavelength grid file
+            with open(gridfile, 'w') as f:
+                f.write(nline)
+            with open(gridfile, 'ab') as f:
+                np.savetxt(f, self.dusty_lambda_grid)
+
+            # update user parameter file
+            with open(parfile, 'r') as f:
+                par_lines = f.readlines()
+            par_lines[15] = f'      PARAMETER (npL={len(self.dusty_lambda_grid)})'
+            with open(parfile, 'w') as f:
+                f.writelines(par_lines)
+
+            # recompile dusty
+            subprocess.run(['gfortran', 'dustyV2.f', '-std=legacy', '-o', 'dusty'])
+
+        # make sure all required files are present in the dusty directory
+        req_files = ['dusty', 'dustyV2.f', 'userpar.inc', 'lambda_grid.dat', 'dusty.inp']
+        for fl_ in req_files:
+            if not os.path.exists(os.path.join(self.dusty_basedir, fl_)):
+                raise ValueError(f"{fl_} not found in {self.dusty_basedir}")
+
+    def setup_input_spec(self, temp, filedir):
+        if not os.path.exists(filedir):
+            os.makedirs(filedir)
+
+        # get marcs model flux
+        rsg_flux = self.get_rsg(temp, model='10')
+        rsg_wv = self.rsg_wavelength.to(u.um)
+        spec_input = np.array([rsg_wv.value, rsg_flux]).T
+
+        # write marcs model as input spectrum for dusty
+        specfilename = os.path.join(filedir, f'marcs_{temp.value}.dat')
+        with open(specfilename, 'w') as f:
+            f.write(f'MARCS model atmosphere for T={temp.value} K\n')
+            f.write(f'  lambda    L_lambda\n')
+            f.write(f' (micron)  (arbitrary)\n')
+        with open(specfilename, 'ab') as f:
+            np.savetxt(f, spec_input)
+
+        return specfilename
+
+    def setup_dusty(self, filedir, p):
+        #p - [specfilename (path), temp (in K), dust_temp (in K), dust_comp ('sil' or 'grf'), shell_thickness (float)]
+        #setup input file fopr dusty
+        inp_file = os.path.join(filedir, f'rsg_{p[1].value}_{p[2].value}.inp')
+        with open(inp_file, 'w') as f:
+            f.write('  I PHYSICAL PARAMETERS\n')
+            f.write('     1) External radiation:\n')
+            f.write('                Spectrum = 5\n')
+            f.write(f'                {p[0]}\n')
+            f.write('     2) Dust Properties\n\n')
+            f.write('       2.1 Chemical composition\n')
+            f.write('           Optical properties index = 1\n')
+            f.write('           Abundances for supported grain types:\n')
+            f.write('               Sil-Ow  Sil-Oc  Sil-DL  grf-DL  amC-Hn  SiC-Pg\n')
+            if p[3].lower() == 'sil' or p[3].lower() == 'silicate':
+                f.write('           x =  0.00    0.00    1.00    0.00    0.00    0.00\n\n')
+            elif p[3].lower() == 'grf' or p[3].lower() == 'graphite':
+                f.write('           x =  0.00    0.00    0.00    1.00    0.00    0.00\n\n')
+            f.write('       2.2 Grain size distribution\n\n')
+            f.write('          Size distribution = 2 % arbitrary MRN\n')
+            f.write('          q = 3.5, a(min) = 0.005 micron, a(max) = 0.25 micron\n\n')
+            f.write('       2.3 Dust temperature on inner boundary:\n\n')
+            f.write(f'        - temperature = {p[2].value} K\n\n')
+            f.write('     3) Density Distribution\n')
+            f.write('        - density type = 1\n')
+            f.write('        - number of powers = 1\n')
+            f.write(f'        - shell\'s relative thickness = {p[4]}\n')
+            f.write('        - power = 2\n\n')
+            f.write('     4) Optical Depth\n')
+            f.write('        - grid type = 1\n')
+            f.write('        - lambda0 = 0.55 micron\n')
+            f.write('        - tau(min) = 0.01; tau(max) = 6\n')
+            f.write('        - number of models = 20\n\n')
+            f.write('  ----------------------------------------------------------------------\n\n')
+            f.write('  II NUMERICS\n\n')
+            f.write('     - accuracy for flux conservation = 0.05\n\n')
+            f.write('  ----------------------------------------------------------------------\n\n')
+            f.write('  III OUTPUT PARAMETERS\n\n')
+            f.write('        FILE DESCRIPTION                               FLAG\n')
+            f.write('       ------------------------------------------------------------\n')
+            f.write('       - verbosity flag;                               verbose = 1\n')
+            f.write('       - properties of emerging spectra;             fname.spp = 0\n')
+            f.write('       - detailed spectra for each model;           fname.s### = 2\n')
+            f.write('       - images at specified wavelengths;           fname.i### = 0\n')
+            f.write('       - visibility function at spec. wavelengths;  fname.v### = 0\n')
+            f.write('       - radial profiles for each model;            fname.r### = 0\n')
+            f.write('       - detailed run-time messages;                fname.m### = 0\n')
+            f.write('       -------------------------------------------------------------\n\n')
+            f.write('  The end of the input parameters listing.\n')
+    
+        return inp_file
+    
+    def scale_flux(self, wv, flux, scale):
+        # Renormalize the RSG spectrum so it's in units of erg/s/cm2/angstrom for
+        # synphot to interpret
+        normalize = simpson(flux, x=wv.to(u.um).value)
+        flux = scale * self.FLUX_SCALE * flux/normalize / u.Angstrom
+
+        return flux.value
+
+    def run_dusty(self, temp, dust_temp, lum, dust_comp=None, shell_thickness=None, filedir=None):
+        curdir = os.getcwd()
+
+        if dust_comp is None:
+            dust_comp = self.dust_comp
+        if shell_thickness is None:
+            shell_thickness = self.shell_thickness
+        if filedir is None:
+            filedir = self.dusty_datadir
+
+        input_spec = self.setup_input_spec(temp=temp, filedir=filedir)
+        p = [input_spec, temp, dust_temp, dust_comp, shell_thickness]
+        inp_file = self.setup_dusty(filedir=filedir, p=p)
+
+        os.chdir(self.dusty_basedir)
+        with open('dusty.inp', 'w') as f:
+            f.write(f'{os.path.join(self.dusty_datadir, inp_file.split('.inp')[0])}')
+
+        subprocess.run(['./dusty'])
+        os.chdir(curdir)

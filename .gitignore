@@ -2,10 +2,12 @@
 .ipynb_checkpoints/
 __pycache__/
 data/dolphot/
+data/rsg*
 *csv
 *png
 *pdf
 *fits
 *txt
+*dat
 frbcat.ipynb
 plots.ipynb
