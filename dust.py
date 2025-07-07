@@ -194,7 +194,7 @@ class dusty_gen(object):
                  dist=10*u.Mpc, 
                  interp_method='cubic', 
                  rewrite_lambda_grid=False,
-                 dusty_grid_path='/Users/aswin/rsg_phot/data/dusty_grid'):
+                 outdir='/Users/aswin/rsg_phot/data/dusty_grid'):
 
         self.dustdir = 'data/dust/'
         self.dist = dist
@@ -218,7 +218,7 @@ class dusty_gen(object):
 
         # DUSTY setup 
         self.dusty_basedir = '/Users/aswin/dustyV2' #os.environ['DUSTY_PATH'] #full path
-        self.dusty_datadir = dusty_grid_path # full path
+        self.dusty_datadir = outdir # full path
         self.dusty_lambda_grid = list(np.logspace(np.log10(0.01), np.log10(0.6), num = 100)) +\
                                  list(np.logspace(np.log10(0.6), np.log10(4.5), num = 1000)) +\
                                  list(np.logspace(np.log10(4.5), np.log10(15), num = 200)) +\
@@ -276,59 +276,66 @@ class dusty_gen(object):
             if not os.path.exists(os.path.join(self.dusty_basedir, fl_)):
                 raise ValueError(f"{fl_} not found in {self.dusty_basedir}")
 
-    def setup_input_spec(self, temp, filedir):
-        if not os.path.exists(filedir):
-            os.makedirs(filedir)
+    def setup_input_spec(self, temp, filedir, redo=False):
+        outdir = os.path.join(filedir, 'marcs_spec')
+        specfilename = os.path.join(outdir, f'marcs_{temp.value}.dat')
+        if redo or not os.path.exists(specfilename):
+            if not os.path.exists(outdir):
+                os.makedirs(outdir)
 
-        # get marcs model flux
-        rsg_flux = self.get_rsg(temp, model='10')
-        rsg_wv = self.rsg_wavelength.to(u.um)
-        spec_input = np.array([rsg_wv.value, rsg_flux]).T
+            # get marcs model flux
+            rsg_flux = self.get_rsg(temp, model='10')
+            rsg_wv = self.rsg_wavelength.to(u.um)
+            spec_input = np.array([rsg_wv.value, rsg_flux]).T
 
-        # write marcs model as input spectrum for dusty
-        specfilename = os.path.join(filedir, f'marcs_{temp.value}.dat')
-        with open(specfilename, 'w') as f:
-            f.write(f'MARCS model atmosphere for T={temp.value} K\n')
-            f.write(f'  lambda    L_lambda\n')
-            f.write(f' (micron)  (arbitrary)\n')
-        with open(specfilename, 'ab') as f:
-            np.savetxt(f, spec_input)
+            # write marcs model as input spectrum for dusty
+            with open(specfilename, 'w') as f:
+                f.write(f'MARCS model atmosphere for T={temp.value} K\n')
+                f.write(f'  lambda    L_lambda\n')
+                f.write(f' (micron)  (arbitrary)\n')
+            with open(specfilename, 'ab') as f:
+                np.savetxt(f, spec_input)
 
         return specfilename
 
     def setup_dusty(self, filedir, p):
-        #p - [specfilename (path), temp (in K), dust_temp (in K), dust_comp ('sil' or 'grf'), shell_thickness (float)]
-        #setup input file fopr dusty
-        inp_file = os.path.join(filedir, f'rsg_{p[1].value}_{p[2].value}.inp')
+        #p - specfilename (path), temp (in K), dust_temp (in K), dust_comp ('sil' or 'grf'), shell_thickness (float), tau (at 0.55 micron)
+        #setup input file for dusty
+        outdir = os.path.join(filedir, 'dusty_out', f'rsg_{p['temp'].value}_{p['dust_temp'].value}')
+        if not os.path.exists(outdir):
+            os.makedirs(outdir)
+
+        inp_file = os.path.join(outdir, f'rsg_{p['temp'].value}_{p['dust_temp'].value}.inp')
+
         with open(inp_file, 'w') as f:
             f.write('  I PHYSICAL PARAMETERS\n')
             f.write('     1) External radiation:\n')
             f.write('                Spectrum = 5\n')
-            f.write(f'                {p[0]}\n')
+            f.write(f'                {p['input_spec']}\n')
             f.write('     2) Dust Properties\n\n')
             f.write('       2.1 Chemical composition\n')
             f.write('           Optical properties index = 1\n')
             f.write('           Abundances for supported grain types:\n')
             f.write('               Sil-Ow  Sil-Oc  Sil-DL  grf-DL  amC-Hn  SiC-Pg\n')
-            if p[3].lower() == 'sil' or p[3].lower() == 'silicate':
+            if p['dust_comp'].lower() == 'sil' or p['dust_comp'].lower() == 'silicate': # use Draine and Lee silicate dust
                 f.write('           x =  0.00    0.00    1.00    0.00    0.00    0.00\n\n')
-            elif p[3].lower() == 'grf' or p[3].lower() == 'graphite':
+            elif p['dust_comp'].lower() == 'grf' or p['dust_comp'].lower() == 'graphite': # use Draine and Lee graphite dust
                 f.write('           x =  0.00    0.00    0.00    1.00    0.00    0.00\n\n')
             f.write('       2.2 Grain size distribution\n\n')
             f.write('          Size distribution = 2 % arbitrary MRN\n')
             f.write('          q = 3.5, a(min) = 0.005 micron, a(max) = 0.25 micron\n\n')
             f.write('       2.3 Dust temperature on inner boundary:\n\n')
-            f.write(f'        - temperature = {p[2].value} K\n\n')
+            f.write(f'        - temperature = {p['dust_temp'].value} K\n\n')
             f.write('     3) Density Distribution\n')
             f.write('        - density type = 1\n')
             f.write('        - number of powers = 1\n')
-            f.write(f'        - shell\'s relative thickness = {p[4]}\n')
+            f.write(f'        - shell\'s relative thickness = {p['shell_thickness']}\n')
             f.write('        - power = 2\n\n')
             f.write('     4) Optical Depth\n')
             f.write('        - grid type = 1\n')
             f.write('        - lambda0 = 0.55 micron\n')
-            f.write('        - tau(min) = 0.01; tau(max) = 6\n')
-            f.write('        - number of models = 20\n\n')
+            f.write(f'        - tau(min) = {p['tau'][0]}; tau(max) = {p['tau'][1]}\n')
+            f.write(f'        - number of models = {p['tau'][2]}\n\n')
             f.write('  ----------------------------------------------------------------------\n\n')
             f.write('  II NUMERICS\n\n')
             f.write('     - accuracy for flux conservation = 0.05\n\n')
@@ -356,7 +363,7 @@ class dusty_gen(object):
 
         return flux.value
 
-    def run_dusty(self, temp, dust_temp, lum, dust_comp=None, shell_thickness=None, filedir=None):
+    def run_dusty(self, tau, lum, temp, dust_temp, dust_comp=None, shell_thickness=None, filedir=None, redo=False):
         curdir = os.getcwd()
 
         if dust_comp is None:
@@ -366,13 +373,25 @@ class dusty_gen(object):
         if filedir is None:
             filedir = self.dusty_datadir
 
-        input_spec = self.setup_input_spec(temp=temp, filedir=filedir)
-        p = [input_spec, temp, dust_temp, dust_comp, shell_thickness]
+        if not isinstance(tau, list):
+            tau_V = [tau, tau, 1]
+        elif len(tau) < 3:
+            raise ValueError('Input tau list should be of the format [tau_min, tau_max, n_grid]')
+        else:
+            tau_V = tau
+
+        input_spec = self.setup_input_spec(temp=temp, filedir=filedir, redo=redo)
+        p = {'input_spec': input_spec, 
+             'temp' : temp, 
+             'dust_temp': dust_temp, 
+             'dust_comp': dust_comp, 
+             'shell_thickness' : shell_thickness,
+             'tau' : tau_V}
         inp_file = self.setup_dusty(filedir=filedir, p=p)
 
         os.chdir(self.dusty_basedir)
         with open('dusty.inp', 'w') as f:
-            f.write(f'{os.path.join(self.dusty_datadir, inp_file.split('.inp')[0])}')
+            f.write(f'{inp_file.split('.inp')[0]}')
 
         subprocess.run(['./dusty'])
         os.chdir(curdir)
