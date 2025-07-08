@@ -8,6 +8,7 @@ import numpy as np
 from astropy.io import fits
 import astropy.units as u
 import astropy.constants as const
+from astropy.table import QTable
 from astropy.io import ascii
 from scipy import interpolate
 from scipy.integrate import simpson
@@ -276,8 +277,7 @@ class dusty_gen(object):
             if not os.path.exists(os.path.join(self.dusty_basedir, fl_)):
                 raise ValueError(f"{fl_} not found in {self.dusty_basedir}")
 
-    def setup_input_spec(self, temp, filedir, redo=False):
-        outdir = os.path.join(filedir, 'marcs_spec')
+    def setup_input_spec(self, temp, outdir, redo=False):
         specfilename = os.path.join(outdir, f'marcs_{temp.value}.dat')
         if redo or not os.path.exists(specfilename):
             if not os.path.exists(outdir):
@@ -298,15 +298,16 @@ class dusty_gen(object):
 
         return specfilename
 
-    def setup_dusty(self, filedir, p):
+    def setup_dusty(self, outdir, p):
         #p - specfilename (path), temp (in K), dust_temp (in K), dust_comp ('sil' or 'grf'), shell_thickness (float), tau (at 0.55 micron)
         #setup input file for dusty
-        outdir = os.path.join(filedir, 'dusty_out', f'rsg_{p['temp'].value}_{p['dust_temp'].value}')
         if not os.path.exists(outdir):
             os.makedirs(outdir)
 
+        # input file - outdir/rsg_temp_dusttemp.inp
         inp_file = os.path.join(outdir, f'rsg_{p['temp'].value}_{p['dust_temp'].value}.inp')
 
+        #write input file
         with open(inp_file, 'w') as f:
             f.write('  I PHYSICAL PARAMETERS\n')
             f.write('     1) External radiation:\n')
@@ -352,46 +353,107 @@ class dusty_gen(object):
             f.write('       - detailed run-time messages;                fname.m### = 0\n')
             f.write('       -------------------------------------------------------------\n\n')
             f.write('  The end of the input parameters listing.\n')
-    
-        return inp_file
-    
+
+
     def scale_flux(self, wv, flux, scale):
         # Renormalize the RSG spectrum so it's in units of erg/s/cm2/angstrom for
         # synphot to interpret
         normalize = simpson(flux, x=wv.to(u.um).value)
-        flux = scale * self.FLUX_SCALE * flux/normalize / u.Angstrom
+        flux = scale.value * self.FLUX_SCALE * flux/normalize / u.Angstrom
+        # assert units
 
-        return flux.value
+        return flux
 
-    def run_dusty(self, tau, lum, temp, dust_temp, dust_comp=None, shell_thickness=None, filedir=None, redo=False):
+    def run_dusty(self, tau, temp, dust_temp,
+                  dust_comp='sil', 
+                  shell_thickness=2, 
+                  filedir=None, 
+                  redo_input=False,
+                  redo_dusty=False,
+                  tb_overwrite=False):
         curdir = os.getcwd()
 
-        if dust_comp is None:
-            dust_comp = self.dust_comp
-        if shell_thickness is None:
-            shell_thickness = self.shell_thickness
+        self.dust_comp, self.shell_thickness = dust_comp, shell_thickness
         if filedir is None:
             filedir = self.dusty_datadir
 
+        # format tau input as [tau_min, tau_max, n_grid]
         if not isinstance(tau, list):
             tau_V = [tau, tau, 1]
-        elif len(tau) < 3:
-            raise ValueError('Input tau list should be of the format [tau_min, tau_max, n_grid]')
         else:
+            if len(tau) < 3:
+                raise ValueError('Input tau list should be of the format [tau_min, tau_max, n_grid]')
             tau_V = tau
 
-        input_spec = self.setup_input_spec(temp=temp, filedir=filedir, redo=redo)
+        # create input spectrum
+        input_spec = self.setup_input_spec(temp=temp, outdir=os.path.join(filedir, 'marcs_spec'), redo=redo_input)
+        # parameter list
         p = {'input_spec': input_spec, 
              'temp' : temp, 
              'dust_temp': dust_temp, 
              'dust_comp': dust_comp, 
              'shell_thickness' : shell_thickness,
              'tau' : tau_V}
-        inp_file = self.setup_dusty(filedir=filedir, p=p)
+        
+        # directory structure
+        # - root (filedir)
+        #   - marcs_spec
+        #       - spectra
+        #   - dusty_out
+        #       - basename: rsg_temp_dusttemp (outdir)
+        #           - basename.inp (inpfile)
+        #           - bsaename.out (outfile)
+        #           - basename.s## (spec_files)
+        #           - basename.hdf5 (dusty_tb_file)
 
-        os.chdir(self.dusty_basedir)
-        with open('dusty.inp', 'w') as f:
-            f.write(f'{inp_file.split('.inp')[0]}')
+        basename = f'rsg_{p['temp'].value}_{p['dust_temp'].value}'
+        outdir = os.path.join(filedir, 'dusty_out', basename)
+        outfile = os.path.join(outdir, basename + '.out')
 
-        subprocess.run(['./dusty'])
-        os.chdir(curdir)
+        # run dusty
+        if redo_dusty or not os.path.exists(outfile):
+            self.setup_dusty(outdir=outdir, p=p)
+
+            # write input file in dusty directory
+            os.chdir(self.dusty_basedir)
+            with open('dusty.inp', 'w') as f:
+                f.write(os.path.join(outdir, basename))
+
+            try:
+                _ = subprocess.run(['./dusty'], check=True, capture_output=True).stdout.decode()
+            except subprocess.CalledProcessError as e:
+                raise e
+            os.chdir(curdir)
+
+        # read outfile and spectra files
+        outfile_rows = np.loadtxt(outfile, skiprows=41, max_rows=tau_V[2])
+        idx, taus = outfile_rows[:, 0], outfile_rows[:, 1]
+        spec_files = [f"{os.path.join(outdir, basename)}.s{int(i):03}" for i in idx]
+        taus = outfile_rows[:, 1]
+
+        # create output hdf5 table for spectrum at each tau
+        dusty_tb = QTable()
+        dusty_tb_file = os.path.join(outdir, basename) + '.hdf5'
+
+        for i, fl_ in enumerate(spec_files):
+            t_ = ascii.read(fl_,  names=['lambda', 'fTot', 'xAtt', 'xDs', 'xDe', 'fInp', 'tauT', 'albedo'], format='basic', data_start=0)
+            if i == 0:
+                dusty_tb['lambda'] = t_['lambda'] * u.um
+                dusty_tb[f'fnu_{taus[i]}'] = t_['fTot']
+            else:
+                dusty_tb[f'fnu_{taus[i]}'] = t_['fTot']
+
+        dusty_tb.write(dusty_tb_file, path='data', serialize_meta=True, overwrite=tb_overwrite)
+
+        return dusty_tb, dusty_tb_file
+    
+    def dust_spec(self, tau, lum, temp, dust_temp, Av, Rv, **kwargs):
+        dusty_tb, dusty_tb_file = self.run_dusty(tau, temp, dust_temp, **kwargs)
+        scale = 10**lum * u.Lsun
+        wv = dusty_tb['lambda']
+
+        # scale spectra from dusty output to the correct luminosity
+        for col_ in dusty_tb.colnames[1:]:
+            dusty_tb[col_] = self.scale_flux(wv, dusty_tb[col_], scale)
+
+        return dusty_tb
