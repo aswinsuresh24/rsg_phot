@@ -9,5 +9,8 @@ data/rsg*
 *fits
 *txt
 *dat
+*hdf5
+*inp
+*out
 frbcat.ipynb
 plots.ipynb

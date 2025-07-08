@@ -218,7 +218,7 @@ class dusty_gen(object):
         self.rsg_10 = interpolate.RegularGridInterpolator((self.rsg_wavelength.value, self.rsg_temp.value), self.rsg_data.T, method=interp_method, bounds_error=False)
 
         # DUSTY setup 
-        self.dusty_basedir = '/Users/aswin/dustyV2' #os.environ['DUSTY_PATH'] #full path
+        self.dusty_basedir = os.environ['DUSTY_PATH'] #full path
         self.dusty_datadir = outdir # full path
         self.dusty_lambda_grid = list(np.logspace(np.log10(0.01), np.log10(0.6), num = 100)) +\
                                  list(np.logspace(np.log10(0.6), np.log10(4.5), num = 1000)) +\
@@ -403,7 +403,7 @@ class dusty_gen(object):
         #       - basename: rsg_temp_dusttemp (outdir)
         #           - basename.inp (inpfile)
         #           - bsaename.out (outfile)
-        #           - basename.s## (spec_files)
+        #           - basename.s### (spec_files)
         #           - basename.hdf5 (dusty_tb_file)
 
         basename = f'rsg_{p['temp'].value}_{p['dust_temp'].value}'
@@ -436,7 +436,8 @@ class dusty_gen(object):
         dusty_tb_file = os.path.join(outdir, basename) + '.hdf5'
 
         for i, fl_ in enumerate(spec_files):
-            t_ = ascii.read(fl_,  names=['lambda', 'fTot', 'xAtt', 'xDs', 'xDe', 'fInp', 'tauT', 'albedo'], format='basic', data_start=0)
+            t_ = ascii.read(fl_,  names=['lambda', 'fTot', 'xAtt', 'xDs', 'xDe', 'fInp', 'tauT', 'albedo'], 
+                            format='basic', data_start=0)
             if i == 0:
                 dusty_tb['lambda'] = t_['lambda'] * u.um
                 dusty_tb[f'fnu_{taus[i]}'] = t_['fTot']
