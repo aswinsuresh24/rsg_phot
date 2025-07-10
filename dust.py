@@ -440,9 +440,9 @@ class dusty_gen(object):
                             format='basic', data_start=0)
             if i == 0:
                 dusty_tb['lambda'] = t_['lambda'] * u.um
-                dusty_tb[f'fnu_{taus[i]}'] = t_['fTot']
+                dusty_tb[f'fnu_{taus[i]}'] = t_['fTot']/t_['lambda']
             else:
-                dusty_tb[f'fnu_{taus[i]}'] = t_['fTot']
+                dusty_tb[f'fnu_{taus[i]}'] = t_['fTot']/t_['lambda']
 
         dusty_tb.write(dusty_tb_file, path='data', serialize_meta=True, overwrite=tb_overwrite)
 

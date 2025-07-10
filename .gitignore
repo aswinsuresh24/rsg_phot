@@ -12,5 +12,8 @@ data/rsg*
 *hdf5
 *inp
 *out
+*eep
+*iso
+*cmd
 frbcat.ipynb
 plots.ipynb
