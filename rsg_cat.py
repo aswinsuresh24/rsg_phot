@@ -116,6 +116,9 @@ def save_photfiles(photfile_path, outdir, chunksize = 100000):
     -------
     None
     """
+    if not os.path.exists(outdir):
+        os.makedirs(outdir)
+  
     photfiles = sorted(glob.glob(os.path.join(photfile_path, '*phot')))
     for i, photfile in enumerate(photfiles):
         column_file = photfile + '.columns'
