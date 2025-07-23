@@ -193,8 +193,10 @@ class dustgen(object):
 class dusty_gen(object):
     def __init__(self, 
                  dist=10*u.Mpc, 
+                 logz=0.00,
                  interp_method='cubic', 
                  rewrite_lambda_grid=False,
+                 modeldir='/Users/aswin/rsg_phot/data/marcs/',
                  outdir='/Users/aswin/rsg_phot/data/dusty_grid'):
 
         self.dustdir = 'data/dust/'
@@ -209,13 +211,16 @@ class dusty_gen(object):
         self.DUST_TO_GAS = 0.01
 
         # Read MARCS models
-        # RSG models for range of temperatures
-        self.rsg_temp = np.array([2600,2800,3000,3200,3300,3400,3500,3600,3700,
-                        3800,3900,4000,4250,4500,5000,6000,7000,8000]) * u.K
-        self.rsg_data = np.loadtxt(self.dustdir+'data10.dat', unpack=True, dtype=float)
-        self.rsg_wavelength = np.loadtxt(self.dustdir+'wavelength.dat')
-        self.rsg_wavelength = self.rebin(self.rsg_wavelength, 7748) * u.Angstrom
-        self.rsg_10 = interpolate.RegularGridInterpolator((self.rsg_wavelength.value, self.rsg_temp.value), self.rsg_data.T, method=interp_method, bounds_error=False)
+        self.rsg_modeldir = os.path.join(modeldir, 'g0.00')
+        self.rsg_logz = logz
+        sgn = '+' if self.rsg_logz > -1e-5 else '-'
+        marcs_spec = np.loadtxt(os.path.join(self.rsg_modeldir, 'Z{sgn}{met:.2f}'.format(sgn=sgn, met=self.rsg_logz), 
+                                             'MARCS_models_g0.00_Z{sgn}{met:.2f}.dat'.format(sgn=sgn, met=self.rsg_logz)), dtype=float)
+        self.rsg_temp = marcs_spec[0] * u.K
+        self.rsg_data = marcs_spec[1:]
+        self.rsg_minflux = np.min(self.rsg_data)
+        self.rsg_wavelength = np.logspace(np.log10(1300.), np.log10(200000.), num=5036) * u.Angstrom
+        self.rsg_interp = interpolate.RegularGridInterpolator((self.rsg_wavelength.value, self.rsg_temp.value), self.rsg_data, method=interp_method, bounds_error=False)
 
         # DUSTY setup 
         self.dusty_basedir = os.environ['DUSTY_PATH'] #full path
@@ -238,14 +243,15 @@ class dusty_gen(object):
             curr += int(a.shape[0]/newshape)
         return newarray
     
-    def get_rsg(self, temp, model='10'):
+    def get_rsg(self, temp, model='g00'):
 
         wavelength_grid, temp_grid = np.meshgrid(self.rsg_wavelength.value, temp.value, indexing='ij', sparse=True)
-        if model == '10': 
-            flux = self.rsg_10((wavelength_grid, temp_grid))
+        if model == 'g00': 
+            flux = self.rsg_interp((wavelength_grid, temp_grid))
             flux = flux.flatten()
+            flux[flux<0] = self.rsg_minflux
         else: 
-            raise NotImplementedError('Only model "10" is currently available')
+            raise NotImplementedError('Only model "g00" is currently available')
 
         return flux
     
@@ -284,7 +290,7 @@ class dusty_gen(object):
                 os.makedirs(outdir)
 
             # get marcs model flux
-            rsg_flux = self.get_rsg(temp, model='10')
+            rsg_flux = self.get_rsg(temp, model='g00')
             rsg_wv = self.rsg_wavelength.to(u.um)
             spec_input = np.array([rsg_wv.value, rsg_flux]).T
 
@@ -440,15 +446,15 @@ class dusty_gen(object):
                             format='basic', data_start=0)
             if i == 0:
                 dusty_tb['lambda'] = t_['lambda'] * u.um
-                dusty_tb[f'fnu_{taus[i]}'] = t_['fTot']/t_['lambda']
+                dusty_tb[f'flam_{taus[i]}'] = t_['fTot']/t_['lambda']
             else:
-                dusty_tb[f'fnu_{taus[i]}'] = t_['fTot']/t_['lambda']
+                dusty_tb[f'flam_{taus[i]}'] = t_['fTot']/t_['lambda']
 
         dusty_tb.write(dusty_tb_file, path='data', serialize_meta=True, overwrite=tb_overwrite)
 
         return dusty_tb, dusty_tb_file
     
-    def dust_spec(self, tau, lum, temp, dust_temp, Av, Rv, **kwargs):
+    def dust_spec(self, tau, lum, temp, dust_temp, **kwargs):
         dusty_tb, dusty_tb_file = self.run_dusty(tau, temp, dust_temp, **kwargs)
         scale = 10**lum * u.Lsun
         wv = dusty_tb['lambda']
