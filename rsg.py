@@ -70,25 +70,30 @@ class rsg_phot(object):
         # Default wavelength binset in angstroms for pysynphot
         self.waves = (3500.0 + 10.0*np.arange(9650)) * u.Angstrom
         self.bandpasses = None
+        self.bandpass_dir = os.environ['BANDPASS']
 
-        self.bounds = {
-            'luminosity': [-1.0, 7.0],
-            'temperature': [800., 100000.] * u.K,
-            'tau_V': [0.01, 6.0],
-            'dust_temp': [200., 2000.] * u.K,
-            'mass': [0.1, 120.0] * u.M_sun,
-            'age': [1.0e4, 13.0e9] * u.yr,
-            'period': [0.0, 4.0], # in log10(days)
-            'ratio': [0.1, 0.9],
-            'Av': [0.0, 6.0],
-            'Rv': [2.0, 6.0]
-        }
+        self.nrc_filts = ['F070W','F090W','F115W','F140M','F150W','F162M',
+                          'F164N','F150W2','F182M','F187N','F200W','F210M',
+                          'F212N','F250M','F277W','F300M','F322W2','F323N',
+                          'F335M','F356W','F360M','F405N','F410M','F430M',
+                          'F444W','F460M','F466N','F470N','F480M']
 
     def get_jwst_filters(self, filtnam):
 
         inst, filt = filtnam.split(',')
         filt = filt.lower()
         inst = inst.lower()
+
+        if inst=='nircam':
+            file = f'{filt.lower()}.txt'
+            fullfile = os.path.join(self.bandpass_dir, inst, file)
+
+            table = ascii.read(fullfile)
+            wave = table['Microns']*1e4 * u.Angstrom
+            trans = table['Throughput']
+
+            bp = SpectralElement(Empirical1D, points=wave, lookup_table=trans)
+            return(bp)
         
         globstr = os.path.join(self.pandeia, 'jwst', inst, 'filters', f'*{filt}_trans*')
         filts = glob.glob(globstr)
@@ -178,3 +183,6 @@ class rsg_phot(object):
         mags = dict(zip(inst_filt, mags))
 
         return(mags)
+    
+    def create_rsg_grid(self):
+        pass

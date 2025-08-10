@@ -365,8 +365,8 @@ class dusty_gen(object):
         # Renormalize the RSG spectrum so it's in units of erg/s/cm2/angstrom for
         # synphot to interpret
         normalize = simpson(flux, x=wv.to(u.um).value)
-        flux = scale.value * self.FLUX_SCALE * flux/normalize / u.Angstrom
-        # assert units
+        flux = scale.value * self.FLUX_SCALE * flux/normalize / u.micron
+        flux = flux.to(u.erg/u.s/u.cm**2/u.Angstrom)
 
         return flux
 
@@ -462,5 +462,7 @@ class dusty_gen(object):
         # scale spectra from dusty output to the correct luminosity
         for col_ in dusty_tb.colnames[1:]:
             dusty_tb[col_] = self.scale_flux(wv, dusty_tb[col_], scale)
+
+        dusty_tb.write(dusty_tb_file, path='data', serialize_meta=True, overwrite=True)
 
         return dusty_tb
