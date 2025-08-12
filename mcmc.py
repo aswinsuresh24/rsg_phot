@@ -11,6 +11,8 @@ import astropy.units as u
 import astropy.constants as const
 import traceback
 import math
+import pickle
+import random
 
 DUST_BB_MASS = 2.4319771e-12
 RSG_V_WIND = 50.0 * u.km/u.s
@@ -19,20 +21,37 @@ d=const.R_sun.to('cm') * 1.0 * u.km/u.s / (const.M_sun.to('g') / (1.0 * u.year) 
 DUST_BB_WIND = d.to(u.Unit(1)).value
 
 class mcmc(object):
-    def __init__(self, model_type='rsg', dm=30):
+    def __init__(self, model_type='rsg', comp='sil', shell=2, dm=30.0, dmerr=0.5):
         self.bounds = {
-            'luminosity': [3.5, 7.0],
-            'temperature': [2000.0, 5500.0], #bounds to be set by marcs models
-            'tau_V': [0.01, 1.0],
-            'dust_temp': [500.0, 1800.0],
-            'Av': [0.0, 6.0],
-            'Rv': [2.0, 6.0]
+            'luminosity': [10**3.0, 10**6.0],
+            'temperature': [2600.0, 5000.0], #bounds to be set by marcs models
+            'tau_V': [0.01, 6.0],
+            'dust_temp': [500.0, 1500.0],
+            'Av': [0.0, 5.0],
+            'Rv': [1.0, 6.0]
         }
 
         self.model_type = model_type
-        self.model_fit_params = {'rsg': ['tau_V', 'luminosity','temperature','dust_temp', 'Av', 'Rv']}
+        self.model_fit_params = {'rsg': ['temperature', 'dust_temp', 'tau_V', 'luminosity', 'Rv', 'Av'],
+                                 'rsg_notau': ['temperature', 'dust_temp', 'tau_V', 'luminosity']}
         self.backend = None
-        self.dm = dm
+        self.dm = dm - 30.0
+        self.verbose = False
+        self.dirs = {
+            'bandpass':'data/bandpass',
+            'model_grid':os.path.join('data', 'interpolate', f'{model_type}_{comp}_r{shell}_ext.pkl'),
+            'backends':'data/backends'
+        }
+        with open(self.dirs['model_grid'], 'rb') as f:
+            self.model = pickle.load(f)
+
+        self.significant_figures = 3
+        self.distance = self.mu_to_dist(dm, dmerr)
+
+    def mu_to_dist(self, dm, dmerr):
+        d = 10**(dm/5+1.0) * u.pc
+        de = (10**((dm+dmerr)/5+1.0) - 10**((dm-dmerr)/5+1.0)) * u.pc
+        return [d.to(u.Mpc).value, de.to(u.Mpc).value]
 
     def get_guess(self, model_type='rsg', guess_type='params'):
         if self.backend:
@@ -55,44 +74,26 @@ class mcmc(object):
                 print(traceback.format_exc())
 
         if model_type == 'rsg':
-            guess = np.array([0.02, 4.2, 3200, 1000, 2.3, 4.4])
+            guess = np.array([3200, 800, 0.02, 4.2, 0.05, 3.1])
         else:
             print('ERROR: unrecognized model type. Only "rsg" is currently supported.')
             sys.exit()
 
         return(guess)
     
-    def load_backend(self, model_type, phottable, notau=False): #needs reformating
-        # Format objname from input filename
-        objname = ''
-        if 'name' in phottable.meta.keys():
-            objname = phottable.meta['name']
-        else:
-            objname = self.filename
-            if '/' in objname: objname = os.path.split(objname)[1]
-            objname = objname.replace('.txt','')
-            objname = objname.replace('.dat','')
-            objname = objname.replace('.cat','')
-            objname = objname.split('_')[0]
-            objname = objname.split('-')[0]
-
-        # Create a name from inst_filt, mag, magerr for comparison to backend
-        mjd, inst_filt, mag, magerr = self.get_fit_parameters(phottable)
-        name = ''
-        for i,m,e in zip(inst_filt,mag,magerr):
+    def load_backend(self, phot):
+        objname = phot['index']
+        name = ''+objname
+        for i,m,e in zip(phot['inst_filt'],phot['mag'],phot['magerr']):
             name += i+'='+str('%7.4f'%m)+'+/-'+str('%7.4f'%e)
-            # Remove spaces
             name = name.replace(' ','')
 
         newname = ''
         for c in name:
-            if c in '1234567890': newname+=c
+            newname += str(ord(c))
         newname = str(int(newname)%100207100213100237100267)
 
-        if self.model_type=='rsg' and notau:
-            backfile = self.dirs['backends']+objname+'_rsg_notau.h5'
-        else:
-            backfile = self.dirs['backends']+objname+'_'+self.model_type+'.h5'
+        backfile = os.path.join(self.dirs['backends'], objname+'_'+self.model_type+'.h5')
         if self.verbose:
             print('Backend file:',backfile)
             print('Backend name:',newname)
@@ -104,14 +105,19 @@ class mcmc(object):
         init_pos = [guess * np.random.lognormal(1.0, sigma, ndim) for i in range(nwalkers)]
         return init_pos
     
+    def check_bounds(self, theta):
+        for i,par in enumerate(self.model_fit_params[self.model_type]):
+            if theta[i] < self.bounds[par][0] or theta[i] > self.bounds[par][1]:
+                return(True)
+        return(False)
+    
     def run_emcee(self, phot, sigma=1.0, nsteps=5000, nwalkers=100, guess_type='params'):
-        # mag, magerr, inst_filt = phot['mag'], phot['magerr'], phot['inst_filt']
-        
+        mag, magerr, inst_filt = phot['mag'], phot['magerr'], phot['inst_filt']
         guess = self.get_guess(model_type=self.model_type, guess_type=guess_type)
         ndim = len(self.model_fit_params[self.model_type])
 
         #load backend
-        backend = self.load_backend()
+        backend = self.load_backend(phot)
         use_backend_pos = False
         try:
             if os.path.exists(backend.filename):
@@ -137,98 +143,146 @@ class mcmc(object):
 
         # Construct emcee sampler with parameters derived above
         sampler = emcee.EnsembleSampler(nwalkers, ndim, self.log_likelihood, 
-                                        args=(phot['inst_filt'], phot['mag'], phot['magerr']), backend=backend)
+                                        args=(mag, magerr, inst_filt), backend=backend)
 
         # Run MCMC step - slow
         sampler.run_mcmc(init_pos, nsteps, progress=True)
 
         # Read current model probabilities, samples, and blobs from backend
-        reader = self.load_backend(self.model_type, self.phottable)
+        reader = self.load_backend(phot)
         sample = np.array(reader.get_chain(flat=True))
         prob = np.array(reader.get_log_prob(flat=True))
         blob = np.array(reader.get_blobs(flat=True))
 
-        params = [] ; blobs = []
+        if self.verbose:
+            print('Current number of samples in backend:', len(sample))
+            mask = ~np.isinf(prob)
+            print('Minimum chi^2 is:','%.7f'%(-1.0*np.max(prob)))
+            print('\n\n')
+
+        params = []
         for i,param in enumerate(self.model_fit_params):
             p=self.calculate_param_best_fit(sample[:,i], prob, ndim, param)
             params.append(p)
 
-        for i,param in enumerate(self.model_fit_blobs):
-            b=self.calculate_param_best_fit(blob[:,i], prob, ndim, param)
-            blobs.append(b)
-
-    def compute_model_mag(self, inst_filt, theta, extinction=None):
-
-        model_mag = self.model_functions[self.model_type](inst_filt, *theta)
-
-        # Catch bad model_mag value
-        if model_mag is None:
-            return(None, None, None)
-        elif all([math.isnan(val) for val in model_mag]): #np.isnan?
-            return(None, None, None)
-
-        # Apply dm and extinction according to probability distribution
-        model_mag = np.array(model_mag) + self.dm
-        if extinction is not None:
-            Av, Rv = extinction
-        else:
-            Av, Rv = self.inject_uniform_into_cdf(self.extinction['Av'],
-                self.extinction['Rv'], self.extinction['cdf'])
-
-        for i,val in enumerate(inst_filt):
-            if self.extinction_model:
-                model_mag[i] += self.extinction['function'][val](Rv, Av)
-            elif self.host_ext:
-                model_mag[i] += self.host_ext_inst_filt[val]
-
-            model_mag[i] += self.rv[i] * self.mw_ebv
-
-        # Output model magnitudes and extinction values as blobs
-        return(model_mag, Av, Rv)
-
-    # Estimate log likelihood for a given age, mass, and data set
-    def log_likelihood(self, theta, inst_filt, mag, magerr, extinction=None):
+    def log_likelihood(self, theta, mag, magerr, inst_filt):
 
         if self.check_bounds(theta):
-            return(-np.inf, None, None)
+            return(-np.inf)
+        
+        params = np.meshgrid(*theta, indexing='ij', sparse=True)
+        model_mag = np.array([self.model[f](params).flatten()[0] for f in inst_filt])+self.dm
 
-        if not extinction and self.host_ext:
-            extinction=self.host_ext
+        if any(np.isnan(model_mag)):
+            return(-np.inf)
+        
+        limmask = (mag > 90.0) | (magerr > 90.0) | (np.isnan(mag)) | (np.isnan(magerr))
+        mag = mag[~limmask]
+        magerr = magerr[~limmask]
+        model_mag = model_mag[~limmask]
 
-        model_mag, Av, Rv = self.compute_model_mag(inst_filt, theta,
-            extinction=extinction)
-
-        # Catch bad model_mag value
-        if model_mag is None:
-            return(-np.inf, Av, Rv)
-
-        # Flag missing data values
-        mask = np.array(~np.isnan(model_mag))
-        mag = mag[mask]
-        magerr = magerr[mask]
-        model_mag = model_mag[mask]
-
-        # Handle limits
-        if self.limits:
-            limmask = magerr==0.0
-            for m, mm in zip(mag[limmask], model_mag[limmask]):
-                if m > mm:
-                    return(-np.inf, Av, Rv)
-
-            mag = mag[~limmask]
-            magerr = magerr[~limmask]
-            model_mag = model_mag[~limmask]
-
-            # If all of the limits have passed check and there are no data
-            # left, then we are in limit mode, so just return 1.0
-
-            if len(mag)==0:
-                return(-1.0, Av, Rv)
-
+        if len(mag)==0:
+            return(-1.0)
+        
         chi2 = 1.0
-        if self.extinction['likelihood']:
-            chi2 *= self.extinction['interpolation'](Av, Rv)
-
         chi2 *= np.sum((mag-model_mag)**2/magerr**2)
 
-        return(-1.0*chi2, Av, Rv)
+        if np.isnan(chi2):
+            print(f'likelihood is nan for {theta}')
+            return(-np.inf)
+
+        return(chi2)
+    
+    def sample_params(self, params, prob, ndim, nsamples=None, downsample=1.0):
+
+        mask = np.isinf(np.abs(prob)) | np.isnan(prob)
+        if all(mask):
+            print('WARNING: all probabilities are bad.  Try wider param range')
+            return(params[0])
+        if len(params.shape)==1:
+            params = params[~mask]
+        else:
+            params = params[~mask,:]
+
+        prob = -1.0 * prob[~mask]
+        prob = prob / np.min(prob)
+
+        chi_limit = [1.00, 2.30, 3.50, 4.72, 5.89, 7.04]
+        mask = prob < 1.0 + downsample * chi_limit[ndim-1]
+        if len(params.shape)==1:
+            params_sample = params[mask]
+        else:
+            params_sample = params[mask,:]
+        prob_sample = prob[mask]
+
+        if nsamples and nsamples < len(prob_sample):
+            rand = np.array(random.sample(range(0, len(prob_sample)), nsamples))
+            if len(params_sample.shape)==1:
+                params_sample = params_sample[rand]
+            else:
+                params_sample = params_sample[rand,:]
+            prob_sample = prob_sample[rand]
+
+        return(params_sample, prob_sample)
+    
+    def calculate_param_best_fit(self, params, prob, ndim, name, show=True,
+                                 sampled=False, return_uncertainty=False):
+
+        # Parameters might have already been sampled
+        if not sampled:
+            params_sample, prob_sample = self.sample_params(params, prob, ndim)
+        else:
+            params_sample = params
+            prob_sample = prob
+
+        n = int(self.significant_figures)
+        out_fmt = '{0:<18}: {1:>12} + {2:>12} - {3:>12}'
+
+        mask = ~np.isnan(params_sample)
+        params_sample = params_sample[mask]
+
+        best = np.percentile(params_sample, 50)
+        minval = np.percentile(params_sample, 16)
+        maxval = np.percentile(params_sample, 84)
+
+        mcmc = np.round(best, n)
+        log_mcmc = np.log10(mcmc)
+        if np.isnan(log_mcmc):
+            log_mcmc = 0.0
+        digits = int(np.ceil(log_mcmc))
+        decimal_place = -1 * (digits - n)
+        if float(mcmc)==int(mcmc) and decimal_place < 1:
+            mcmc=int(mcmc)
+
+        minval = round(minval, decimal_place)
+        maxval = round(maxval, decimal_place)
+        maxval = maxval-mcmc
+        minval = mcmc-minval
+
+        if float(minval)==int(minval) and decimal_place < 1:
+            minval=int(minval)
+        if float(maxval)==int(maxval) and decimal_place < 1:
+            maxval=int(maxval)
+
+        if name=='luminosity':
+            logL_unc = 2.17 * self.distance[1]/self.distance[0]
+            minval = minval + logL_unc
+            maxval = maxval + logL_unc
+
+        if np.log10(mcmc)<-3:
+            str_fmt = '%.3e'
+            mcmc = str_fmt % mcmc
+            maxval = str_fmt % maxval
+            minval = str_fmt % minval
+        elif decimal_place>0:
+            str_fmt = '%7.{0}f'.format(int(decimal_place))
+            mcmc = str_fmt % mcmc
+            maxval = str_fmt % maxval
+            minval = str_fmt % minval
+
+        if show: print(out_fmt.format(name, mcmc, maxval, minval))
+
+        if return_uncertainty:
+            return(float(maxval), float(minval))
+        else:
+            return(best)
