@@ -74,7 +74,7 @@ class mcmc(object):
                 print(traceback.format_exc())
 
         if model_type == 'rsg':
-            guess = np.array([3200, 800, 0.02, 1.6e4, 0.125, 3.1])
+            guess = np.array([3200, 800, 0.02, 1.6e4, 3.1, 0.125])
         else:
             print('ERROR: unrecognized model type. Only "rsg" is currently supported.')
             sys.exit()
@@ -102,7 +102,7 @@ class mcmc(object):
         return backend
 
     def get_init_pos(self, guess, ndim, nwalkers, sigma=1):
-        init_pos = [guess * np.random.lognormal(1.0, sigma, ndim) for i in range(nwalkers)]
+        init_pos = [guess * np.random.normal(1.0, sigma, ndim) for i in range(nwalkers)]
         return init_pos
     
     def check_bounds(self, theta):
