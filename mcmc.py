@@ -27,8 +27,8 @@ class mcmc(object):
             'temperature': [2600.0, 5000.0], #bounds to be set by marcs models
             'tau_V': [0.01, 6.0],
             'dust_temp': [500.0, 1500.0],
-            'Av': [0.0, 5.0],
-            'Rv': [1.0, 6.0]
+            'Av': [0.0, 2.0],
+            'Rv': [2.0, 6.0]
         }
 
         self.model_type = model_type
@@ -74,7 +74,7 @@ class mcmc(object):
                 print(traceback.format_exc())
 
         if model_type == 'rsg':
-            guess = np.array([3200, 800, 0.02, 4.2, 0.05, 3.1])
+            guess = np.array([3200, 800, 0.02, 1.6e4, 0.125, 3.1])
         else:
             print('ERROR: unrecognized model type. Only "rsg" is currently supported.')
             sys.exit()
@@ -161,9 +161,11 @@ class mcmc(object):
             print('\n\n')
 
         params = []
-        for i,param in enumerate(self.model_fit_params):
+        for i,param in enumerate(self.model_fit_params[self.model_type]):
             p=self.calculate_param_best_fit(sample[:,i], prob, ndim, param)
             params.append(p)
+
+        return params
 
     def log_likelihood(self, theta, mag, magerr, inst_filt):
 
@@ -185,8 +187,7 @@ class mcmc(object):
             return(-1.0)
         
         chi2 = 1.0
-        chi2 *= np.sum((mag-model_mag)**2/magerr**2)
-
+        chi2 *= -0.5*np.sum((mag-model_mag)**2/magerr**2)
         if np.isnan(chi2):
             print(f'likelihood is nan for {theta}')
             return(-np.inf)
