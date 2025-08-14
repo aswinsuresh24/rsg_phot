@@ -101,8 +101,12 @@ class mcmc(object):
 
         return backend
 
-    def get_init_pos(self, guess, ndim, nwalkers, sigma=1):
-        init_pos = [guess * np.random.normal(1.0, sigma, ndim) for i in range(nwalkers)]
+    def get_init_pos(self, ndim, nwalkers):
+        init_pos = np.zeros((nwalkers, ndim))
+
+        for i,par in enumerate(self.model_fit_params[self.model_type]):
+            init_pos[:,i] = np.random.uniform(self.bounds[par][0], self.bounds[par][1], nwalkers)
+
         return init_pos
     
     def check_bounds(self, theta):
@@ -111,7 +115,7 @@ class mcmc(object):
                 return(True)
         return(False)
     
-    def run_emcee(self, phot, sigma=1.0, nsteps=5000, nwalkers=100, guess_type='params'):
+    def run_emcee(self, phot, nsteps=500, nwalkers=100, guess_type='params'):
         mag, magerr, inst_filt = phot['mag'], phot['magerr'], phot['inst_filt']
         guess = self.get_guess(model_type=self.model_type, guess_type=guess_type)
         ndim = len(self.model_fit_params[self.model_type])
@@ -139,7 +143,7 @@ class mcmc(object):
             print('Current number of iterations on backend: ',backend.iteration)
             init_pos = backend.get_last_sample()
         else:
-            init_pos = self.get_init_pos(guess, ndim, nwalkers, sigma=sigma)
+            init_pos = self.get_init_pos(ndim, nwalkers)
 
         # Construct emcee sampler with parameters derived above
         sampler = emcee.EnsembleSampler(nwalkers, ndim, self.log_likelihood, 
