@@ -115,7 +115,7 @@ class mcmc(object):
                 return(True)
         return(False)
     
-    def run_emcee(self, phot, nsteps=500, nwalkers=100, guess_type='params'):
+    def run_emcee(self, phot, nsteps=500, nwalkers=100, guess_type='params', burn_in=5000):
         mag, magerr, inst_filt = phot['mag'], phot['magerr'], phot['inst_filt']
         guess = self.get_guess(model_type=self.model_type, guess_type=guess_type)
         ndim = len(self.model_fit_params[self.model_type])
@@ -147,7 +147,8 @@ class mcmc(object):
 
         # Construct emcee sampler with parameters derived above
         sampler = emcee.EnsembleSampler(nwalkers, ndim, self.log_likelihood, 
-                                        args=(mag, magerr, inst_filt), backend=backend)
+                                        args=(mag, magerr, inst_filt), backend=backend,
+                                        moves=[(emcee.moves.KDEMove(), 1.0)])
 
         # Run MCMC step - slow
         sampler.run_mcmc(init_pos, nsteps, progress=True)
@@ -165,8 +166,9 @@ class mcmc(object):
             print('\n\n')
 
         params = []
+        converged_sample, converged_prob = sample[burn_in:], prob[burn_in:]
         for i,param in enumerate(self.model_fit_params[self.model_type]):
-            p=self.calculate_param_best_fit(sample[:,i], prob, ndim, param)
+            p=self.calculate_param_best_fit(converged_sample[:,i], converged_prob, ndim, param)
             params.append(p)
 
         return params
@@ -192,6 +194,7 @@ class mcmc(object):
         
         chi2 = 1.0
         chi2 *= -0.5*np.sum((mag-model_mag)**2/magerr**2)
+        chi2 /= (len(model_mag) - 1)
         if np.isnan(chi2):
             print(f'likelihood is nan for {theta}')
             return(-np.inf)
