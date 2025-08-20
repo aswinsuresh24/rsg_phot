@@ -5,7 +5,7 @@ from synphot import SpectralElement
 from synphot.models import Empirical1D
 import os, glob, sys
 import numpy as np
-from astropy.io import fits
+from astropy.io import fits, ascii
 import astropy.units as u
 import astropy.constants as const
 from scipy import interpolate

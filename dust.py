@@ -214,8 +214,8 @@ class dusty_gen(object):
         self.rsg_modeldir = os.path.join(modeldir, 'g0.00')
         self.rsg_logz = logz
         sgn = '+' if self.rsg_logz > -1e-5 else '-'
-        marcs_spec = np.loadtxt(os.path.join(self.rsg_modeldir, 'Z{sgn}{met:.2f}'.format(sgn=sgn, met=self.rsg_logz), 
-                                             'MARCS_models_g0.00_Z{sgn}{met:.2f}.dat'.format(sgn=sgn, met=self.rsg_logz)), dtype=float)
+        marcs_spec = np.loadtxt(os.path.join(self.rsg_modeldir, 'Z{sgn}{met:.2f}'.format(sgn=sgn, met=np.abs(self.rsg_logz)), 
+                                             'MARCS_models_g0.00_Z{sgn}{met:.2f}.dat'.format(sgn=sgn, met=np.abs(self.rsg_logz))), dtype=float)
         self.rsg_temp = marcs_spec[0] * u.K
         self.rsg_data = marcs_spec[1:]
         self.rsg_minflux = np.min(self.rsg_data)
@@ -330,7 +330,7 @@ class dusty_gen(object):
                 f.write('           x =  0.00    0.00    0.00    1.00    0.00    0.00\n\n')
             f.write('       2.2 Grain size distribution\n\n')
             f.write('          Size distribution = 2 % arbitrary MRN\n')
-            f.write('          q = 3.5, a(min) = 0.005 micron, a(max) = 0.25 micron\n\n')
+            f.write('          q = 3.5, a(min) = 0.005 micron, a(max) = 1.00 micron\n\n')
             f.write('       2.3 Dust temperature on inner boundary:\n\n')
             f.write(f'        - temperature = {p['dust_temp'].value} K\n\n')
             f.write('     3) Density Distribution\n')

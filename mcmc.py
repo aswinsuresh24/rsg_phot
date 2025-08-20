@@ -24,10 +24,10 @@ class mcmc(object):
     def __init__(self, model_type='rsg', comp='sil', shell=2, dm=30.0, dmerr=0.5):
         self.bounds = {
             'luminosity': [10**3.0, 10**6.0],
-            'temperature': [2600.0, 5000.0], #bounds to be set by marcs models
+            'temperature': [2600.0, 5000.0], 
             'tau_V': [0.01, 6.0],
             'dust_temp': [500.0, 1500.0],
-            'Av': [0.0, 2.0],
+            'Av': [0.0, 5.0],
             'Rv': [2.0, 6.0]
         }
 
@@ -115,7 +115,7 @@ class mcmc(object):
                 return(True)
         return(False)
     
-    def run_emcee(self, phot, nsteps=500, nwalkers=100, guess_type='params', burn_in=5000):
+    def run_emcee(self, phot, nsteps=350, nwalkers=64, guess_type='params', burn_in=75):
         mag, magerr, inst_filt = phot['mag'], phot['magerr'], phot['inst_filt']
         guess = self.get_guess(model_type=self.model_type, guess_type=guess_type)
         ndim = len(self.model_fit_params[self.model_type])
@@ -166,7 +166,8 @@ class mcmc(object):
             print('\n\n')
 
         params = []
-        converged_sample, converged_prob = sample[burn_in:], prob[burn_in:]
+        converged_sample = np.array(reader.get_chain(flat=True, discard=burn_in))
+        converged_prob = np.array(reader.get_log_prob(flat=True, discard=burn_in))
         for i,param in enumerate(self.model_fit_params[self.model_type]):
             p=self.calculate_param_best_fit(converged_sample[:,i], converged_prob, ndim, param)
             params.append(p)
