@@ -21,12 +21,12 @@ d=const.R_sun.to('cm') * 1.0 * u.km/u.s / (const.M_sun.to('g') / (1.0 * u.year) 
 DUST_BB_WIND = d.to(u.Unit(1)).value
 
 class mcmc(object):
-    def __init__(self, model_type='rsg', comp='sil', shell=2, dm=30.0, dmerr=0.5):
+    def __init__(self, model_type='rsg', comp='sil', z=0.00, shell=2, dm=30.0, dmerr=0.5):
         self.bounds = {
             'luminosity': [10**3.0, 10**6.0],
             'temperature': [2600.0, 5000.0], 
-            'tau_V': [0.01, 6.0],
-            'dust_temp': [500.0, 1500.0],
+            'tau_V': [0.01, 12.0],
+            'dust_temp': [200.0, 1800.0],
             'Av': [0.0, 5.0],
             'Rv': [2.0, 6.0]
         }
@@ -39,7 +39,7 @@ class mcmc(object):
         self.verbose = False
         self.dirs = {
             'bandpass':'data/bandpass',
-            'model_grid':os.path.join('data', 'interpolate', f'{model_type}_{comp}_r{shell}_ext.pkl'),
+            'model_grid':os.path.join('data', 'interpolate', f'{model_type}_{comp}_r{shell}_z{z:.2f}_ext.pkl'),
             'backends':'data/backends'
         }
         with open(self.dirs['model_grid'], 'rb') as f:
