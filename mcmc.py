@@ -47,6 +47,7 @@ class mcmc(object):
 
         self.significant_figures = 3
         self.distance = self.mu_to_dist(dm, dmerr)
+        self.phot = None
 
     def mu_to_dist(self, dm, dmerr):
         d = 10**(dm/5+1.0) * u.pc
@@ -115,9 +116,12 @@ class mcmc(object):
                 return(True)
         return(False)
     
-    def run_emcee(self, phot, nsteps=350, nwalkers=64, guess_type='params', burn_in=75):
-        mag, magerr, inst_filt = phot['mag'], phot['magerr'], phot['inst_filt']
-        guess = self.get_guess(model_type=self.model_type, guess_type=guess_type)
+    def run_emcee(self, phot, nsteps=350, nwalkers=64, burn_in=75):
+        limmask = (phot['mag'] > 90.0) | (phot['magerr'] > 90.0) | (np.isnan(phot['mag'])) | (np.isnan(phot['magerr']))
+        phot['mag'] = phot['mag'][~limmask]
+        phot['magerr'] = phot['magerr'][~limmask]
+        phot['inst_filt'] = phot['inst_filt'][~limmask]
+        self.phot = phot
         ndim = len(self.model_fit_params[self.model_type])
 
         #load backend
@@ -146,11 +150,10 @@ class mcmc(object):
             init_pos = self.get_init_pos(ndim, nwalkers)
 
         # Construct emcee sampler with parameters derived above
-        sampler = emcee.EnsembleSampler(nwalkers, ndim, self.log_likelihood, 
-                                        args=(mag, magerr, inst_filt), backend=backend,
-                                        moves=[(emcee.moves.KDEMove(), 1.0)])
+        sampler = emcee.EnsembleSampler(nwalkers, ndim, self.log_likelihood, backend=backend, 
+                                        moves=[(emcee.moves.KDEMove(), 1.0)], threads=30)
 
-        # Run MCMC step - slow
+        # Run MCMC step
         sampler.run_mcmc(init_pos, nsteps, progress=True)
 
         # Read current model probabilities, samples, and blobs from backend
@@ -174,28 +177,17 @@ class mcmc(object):
 
         return params
 
-    def log_likelihood(self, theta, mag, magerr, inst_filt):
-
+    def log_likelihood(self, theta):
         if self.check_bounds(theta):
             return(-np.inf)
         
         params = np.meshgrid(*theta, indexing='ij', sparse=True)
-        model_mag = np.array([self.model[f](params).flatten()[0] for f in inst_filt])+self.dm
+        model_mag = np.array([self.model[f](params).flatten()[0] for f in self.phot['inst_filt']])+self.dm
 
         if any(np.isnan(model_mag)):
             return(-np.inf)
         
-        limmask = (mag > 90.0) | (magerr > 90.0) | (np.isnan(mag)) | (np.isnan(magerr))
-        mag = mag[~limmask]
-        magerr = magerr[~limmask]
-        model_mag = model_mag[~limmask]
-
-        if len(mag)==0:
-            return(-1.0)
-        
-        chi2 = 1.0
-        chi2 *= -0.5*np.sum((mag-model_mag)**2/magerr**2)
-        chi2 /= (len(model_mag) - 1)
+        chi2 = -0.5*np.sum((self.phot['mag']-model_mag)**2/self.phot['magerr']**2) / (len(model_mag) - 1)
         if np.isnan(chi2):
             print(f'likelihood is nan for {theta}')
             return(-np.inf)
