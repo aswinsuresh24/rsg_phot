@@ -49,6 +49,16 @@ class mcmc(object):
         self.distance = self.mu_to_dist(dm, dmerr)
         self.phot = None
 
+    def reset_bounds(self):
+        self.bounds = {
+            'luminosity': [10**3.0, 10**6.0],
+            'temperature': [2600.0, 5000.0], 
+            'tau_V': [0.01, 12.0],
+            'dust_temp': [200.0, 1800.0],
+            'Av': [0.0, 5.0],
+            'Rv': [2.0, 6.0]
+        }
+
     def mu_to_dist(self, dm, dmerr):
         d = 10**(dm/5+1.0) * u.pc
         de = (10**((dm+dmerr)/5+1.0) - 10**((dm-dmerr)/5+1.0)) * u.pc
@@ -151,7 +161,7 @@ class mcmc(object):
 
         # Construct emcee sampler with parameters derived above
         sampler = emcee.EnsembleSampler(nwalkers, ndim, self.log_likelihood, backend=backend, 
-                                        moves=[(emcee.moves.KDEMove(), 1.0)], threads=30)
+                                        moves=[(emcee.moves.KDEMove(), 1.0)])
 
         # Run MCMC step
         sampler.run_mcmc(init_pos, nsteps, progress=True)
