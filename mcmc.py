@@ -154,7 +154,7 @@ class mcmc(object):
                 use_backend_pos = False
 
         if use_backend_pos:
-            print('Current number of iterations on backend: ',backend.iteration)
+            if self.verbose: print('Current number of iterations on backend: ',backend.iteration)
             init_pos = backend.get_last_sample()
         else:
             init_pos = self.get_init_pos(ndim, nwalkers)
@@ -164,7 +164,7 @@ class mcmc(object):
                                         moves=[(emcee.moves.KDEMove(), 1.0)])
 
         # Run MCMC step
-        sampler.run_mcmc(init_pos, nsteps, progress=True)
+        sampler.run_mcmc(init_pos, nsteps, progress=self.verbose)
 
         # Read current model probabilities, samples, and blobs from backend
         reader = self.load_backend(phot)
@@ -178,12 +178,13 @@ class mcmc(object):
             print('Minimum chi^2 is:','%.7f'%(-1.0*np.max(prob)))
             print('\n\n')
 
-        params = []
+        params = dict.fromkeys(self.model_fit_params[self.model_type])
         converged_sample = np.array(reader.get_chain(flat=True, discard=burn_in))
         converged_prob = np.array(reader.get_log_prob(flat=True, discard=burn_in))
         for i,param in enumerate(self.model_fit_params[self.model_type]):
-            p=self.calculate_param_best_fit(converged_sample[:,i], converged_prob, ndim, param)
-            params.append(p)
+            p, p_elow, p_eup = self.calculate_param_best_fit(converged_sample[:,i], converged_prob, ndim, param, 
+                                                             verbose=self.verbose, return_uncertainty=True)
+            params[param] = (p, p_elow, p_eup)
 
         return params
 
@@ -236,7 +237,7 @@ class mcmc(object):
 
         return(params_sample, prob_sample)
     
-    def calculate_param_best_fit(self, params, prob, ndim, name, show=True,
+    def calculate_param_best_fit(self, params, prob, ndim, name, verbose=True,
                                  sampled=False, return_uncertainty=False):
 
         # Parameters might have already been sampled
@@ -291,9 +292,9 @@ class mcmc(object):
             maxval = str_fmt % maxval
             minval = str_fmt % minval
 
-        if show: print(out_fmt.format(name, mcmc, maxval, minval))
+        if verbose: print(out_fmt.format(name, mcmc, maxval, minval))
 
         if return_uncertainty:
-            return(float(maxval), float(minval))
+            return(best, float(maxval), float(minval))
         else:
             return(best)

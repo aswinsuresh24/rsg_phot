@@ -1,3 +1,5 @@
+import warnings
+warnings.simplefilter('ignore')
 import numpy as np
 from synphot import SpectralElement
 from synphot.models import Empirical1D
@@ -21,11 +23,10 @@ import itertools
 from tqdm import tqdm
 from rsg_cat import save_photfiles
 from mcmc import mcmc
-from multiprocessing import pool
+from multiprocessing import Pool
 import argparse
 import logging
-import warnings
-warnings.simplefilter('ignore')
+import multiprocessing_logging
 
 def create_parser():
     '''
@@ -52,10 +53,18 @@ def create_parser():
 
 class parallel_sed_fit(object):
     def __init__(self, gal, photfile_path, dm=30, dmerr=0.5, z=0.0, trgb=('F090W', 30),
-                 keep_narrow=False, ncores=10, ignore_filts=[]):
+                 keep_narrow=False, ncores=10, ignore_filts=[], rsgcat=None):
+        
+        self.logger = self.getLogger("DEBUG",) # logfile=os.path.join(self.photfile_path, 'mcmc.log'))
+
         self.gal = gal
         self.photfile_path = photfile_path
         self.cat = self.read_cat(self.photfile_path)
+        self.set_cols()
+        self.rsgcat = rsgcat
+        self.dm, self.dmerr = dm, dmerr
+        self.z = z
+        self.ncores = ncores
 
         self.nrc_filts = np.array(['F070W','F090W','F115W','F140M','F150W', 'F150W2', 'F162M',
                                     'F164N','F182M','F187N','F200W','F210M','F212N','F250M',
@@ -63,7 +72,7 @@ class parallel_sed_fit(object):
                                     'F405N','F410M','F430M','F444W','F460M','F466N','F470N','F480M'])
         self.wv_all = [float(i.replace('F', '').replace('W2', '').replace('M', '').replace('N', '').replace('W', ''))/100 
                        for i in self.nrc_filts]
-        self.gen_mc_obj = mcmc(dm=dm, dmerr=dmerr, z=z)
+        self.gen_mc_obj = mcmc(dm=self.dm, dmerr=self.dmerr, z=self.z)
         self.gen_mc_obj.verbose = True
         self.keep_narrow = keep_narrow
         self.trgb = trgb
@@ -74,6 +83,7 @@ class parallel_sed_fit(object):
             'tau_' : np.array(list(np.linspace(0.01, 2, 21)) + list(np.arange(2.5, 5.5, 0.5))),
             'Av_' : np.array(list(np.linspace(0, 1, 5))+ list(np.linspace(1.5, 3, 4)))
         }
+        self.mcfit_params = np.array(['temperature', 'dust_temp', 'tau_V', 'luminosity', 'Rv', 'Av'])
         
     def read_cat(self, photfile_path):
         catpath = os.path.join(photfile_path, 'proc')
@@ -91,8 +101,32 @@ class parallel_sed_fit(object):
         cat.reset_index(inplace=True)
         cat['index'] = cat.index
         cat = cat.replace(np.nan, 99.999)
+        self.logger.info(f'DOLPHOT catalog contains {len(cat)} objects after photometry cuts')
 
         return cat
+    
+    def getLogger(self, level, logfile=None):
+        logger = logging.getLogger("rsg_sedfit")
+        formatter = logging.Formatter('%(name)s [l %(lineno)d] - %(levelname)s - %(message)s')
+        handler = logging.StreamHandler(sys.stdout)
+        handler.setFormatter(formatter)
+        logger.addHandler(handler)
+        if logfile is not None:
+            handler = logging.FileHandler(logfile)
+            handler.setFormatter(formatter)
+            logger.addHandler(handler)
+        logger.setLevel(level)
+        return logger
+
+    def mp_init(init_success: int = 0,
+                init_failed: int = 0,
+                init_success_cols: list =[]):
+        global success
+        global failed
+        global success_files
+        success = init_success
+        failed = init_failed
+        success_files = init_success_cols
 
     def base_cuts(self, cat, fls, min_det=4):
         def detmask(cat_mags_det, min_det=4):
@@ -107,6 +141,7 @@ class parallel_sed_fit(object):
 
             return detm
         
+        self.logger.info(f'Applying ndet cuts')
         self.gen_mc_obj.bounds['luminosity'] = [10**3.5, 10**3.6]
 
         base_models = np.zeros((2000, len(self.nrc_filts)))
@@ -139,10 +174,12 @@ class parallel_sed_fit(object):
         ndetm = detmask(ndet, min_det=min_det)
         base_mask = difm & ndetm 
         rsgcat = cat[base_mask].replace(np.nan, 99.999)
+        self.logger.info(f'RSG catalog contains {len(rsgcat)} objects after ndet cuts')
 
         return rsgcat
     
     def color_cuts(self, base_rsgcat, fls, min_width=0.5, rel_err=0.25):
+        self.logger.info(f'Applying color cuts')
         cat_mags = base_rsgcat[fls]
         color_dict = {}
         cmb_iterator = list(itertools.combinations(self.nrc_filts, 2))
@@ -185,6 +222,7 @@ class parallel_sed_fit(object):
             colorm = colorm & colm_
 
         rsgcat = base_rsgcat[colorm]
+        self.logger.info(f'RSG catalog contains {len(rsgcat)} objects after color cuts')
         return rsgcat
     
     def create_modeldf(self):
@@ -192,6 +230,7 @@ class parallel_sed_fit(object):
         if os.path.exists(outpath):
             modeldf = pd.read_csv(outpath)
         else:
+            self.logger.info(f'Creating modeldf: {outpath}')
             modeldf = pd.DataFrame(columns = ['Teff', 'Tdust', 'Tau', 'Av'] + list(self.nrc_filts))
             self.gen_mc_obj.reset_bounds()
             for a1 in tqdm(self.chimin_params['teff_']):
@@ -222,12 +261,10 @@ class parallel_sed_fit(object):
         return chisq[minchisq], minchisq, lum      
 
     def chimin_cuts(self, base_rsgcat, modeldf):
-        base_rsgcat.loc[:, ['chimin', 'teff', 'tdust', 'tau', 'av', 'lum']] = 0.0
+        base_rsgcat.loc[:, ['chimin', 'teff_chisq', 'tdust_chisq', 'tau_chisq', 'av_chisq', 'lum_chisq']] = 0.0
+        self.logger.info(f'Applying chisq cuts')
         for idx in tqdm(base_rsgcat.index):
             testcol = base_rsgcat.loc[idx]
-
-            if self.cols==None:
-                raise ValueError('mag and error column information missing, set self.cols')
 
             phot = {'mag': testcol[self.cols['magcols']].values,
                     'magerr': testcol[self.cols['errcols']].values,
@@ -247,21 +284,20 @@ class parallel_sed_fit(object):
             phot['inst_filt'] = phot['inst_filt'][~limmask]
 
             c_, m_, l_ = self.chimin(phot, modeldf)
-            base_rsgcat.loc[idx, ['chimin', 'lum']] = c_, l_
-            base_rsgcat.loc[idx, ['teff', 'tdust', 'tau', 'av']] = modeldf.loc[m_, ['Teff', 'Tdust', 'Tau', 'Av']].values
+            base_rsgcat.loc[idx, ['chimin', 'lum_chisq']] = c_, l_
+            base_rsgcat.loc[idx, ['teff_chisq', 'tdust_chisq', 'tau_chisq', 'av_chisq']] = modeldf.loc[m_, ['Teff', 'Tdust', 'Tau', 'Av']].values
 
         chi_cut = 2*np.nanmedian(base_rsgcat['chimin'])
-        agb_cut = (base_rsgcat['teff'] <= 3300) | (base_rsgcat['teff'] >= 4700) | (base_rsgcat['chimin'] > chi_cut)
+        agb_cut = (base_rsgcat['teff_chisq'] <= 3300) | (base_rsgcat['teff_chisq'] >= 4700) | (base_rsgcat['chimin'] > chi_cut)
 
         rsgcat = base_rsgcat[~agb_cut]
+        self.logger.info(f'RSG catalog contains {len(rsgcat)} objects after chisq cuts')
         return rsgcat
     
-    def apply_initial_cuts(self):
+    def set_cols(self):
         fls = ['mag' in i for i in self.cat.columns]
         fls = self.cat.columns[fls]
-        cat_mags = self.cat[fls]
-        cat_wv = np.array([float(i[1:4])/100 for i in cat_mags.columns])
-        cat_mags = cat_mags.replace(np.nan, 99.999)
+        cat_wv = np.array([float(i[1:4])/100 for i in fls])
         flts = [i.replace('_mag','') for i in fls]
         magcols = [i+'_mag' for i in flts]
         errcols = [i+'_err' for i in flts]
@@ -270,20 +306,77 @@ class parallel_sed_fit(object):
                      'magcols' : magcols,
                      'errcols' : errcols,
                      'cat_wv': cat_wv}
-
-        base_rsgcat = self.base_cuts(self.cat, fls)
-        base_rsgcat = self.color_cuts(base_rsgcat, fls)
+    
+    def apply_initial_cuts(self):
+        base_rsgcat = self.base_cuts(self.cat, self.cols['magcols'])
+        base_rsgcat = self.color_cuts(base_rsgcat, self.cols['magcols'])
 
         modeldf = self.create_modeldf()
         rsgcat = self.chimin_cuts(base_rsgcat, modeldf)
-        self.rsgcat = rsgcat
         return rsgcat
 
-    def parallel_mc_worker(self, phot):
-        raise(NotImplementedError)
+    def parallel_mc_worker(self, col, nsteps=350, nwalkers=64, burn_in=75):
+        self.logger.info(f"Running MCMC on index {int(col['index'])}")
+        phot = {'mag': col[self.cols['magcols']].values,
+                'magerr': col[self.cols['errcols']].values,
+                'inst_filt': np.array(self.cols['flts']),
+                'index': f'ngc5643_{int(col['index'])}'}
+
+        if not self.keep_narrow:
+                fl_mask = np.array(['N' in i for i in phot['inst_filt']]) | np.array(['300M' in i for i in phot['inst_filt']])
+                phot['mag'] = phot['mag'][~fl_mask]
+                
+                phot['magerr'] = phot['magerr'][~fl_mask]
+                phot['inst_filt'] = phot['inst_filt'][~fl_mask]
+
+        limmask = (phot['mag'] > 90.0) | (phot['magerr'] > 90.0) | (np.isnan(phot['mag'])) | (np.isnan(phot['magerr']))
+        phot['mag'] = phot['mag'][~limmask]
+        phot['magerr'] = phot['magerr'][~limmask]
+        phot['inst_filt'] = phot['inst_filt'][~limmask]
+
+        mc_obj = mcmc(dm=self.dm, dmerr=self.dmerr, z=self.z)
+        mc_obj.verbose = False
+
+        fit_params = mc_obj.run_emcee(phot, nsteps=nsteps, nwalkers=nwalkers, burn_in=burn_in)
+        fit_pe = np.array(list(fit_params.values()))
+        reader = mc_obj.load_backend(phot)
+        sample = np.array(reader.get_chain(flat=True, discard=burn_in, thin=1))
+        probs = np.array(reader.get_log_prob(flat=True, discard=burn_in, thin=1))
+        min_chi_params = sample[np.argmax(probs)]
+
+        params = np.meshgrid(*fit_pe[:, 0], indexing='ij', sparse=True)
+        model_mag = np.array([mc_obj.model[f](params).flatten()[0] for f in phot['inst_filt']])+mc_obj.dm
+        chi_post = np.sum((phot['mag'] - model_mag)**2)/(len(model_mag)-1)
+
+        mc_params = np.meshgrid(*min_chi_params, indexing='ij', sparse=True)
+        chi_mag = np.array([mc_obj.model[f](mc_params).flatten()[0] for f in phot['inst_filt']])+mc_obj.dm
+        chi_best = 0.5*np.sum((phot['mag'] - chi_mag)**2)/(len(chi_mag)-1)
+
+        for i, p_ in enumerate(fit_params.keys()):
+            self.rsgcat.loc[int(col['index']), [p_+'_mc', p_+'_elow', p_+'_eup', p_+'_best']] = list(fit_params[p_]) + [min_chi_params[i]] 
+        self.rsgcat.loc[int(col['index']), ['chi_posterior', 'chi_best']] = [chi_post, chi_best]
     
-    def run_sed_fit(self, rsgcat):
-        raise(NotImplementedError)
+    def run_sed_fit(self):
+        if self.rsgcat is None:
+            self.rsgcat = self.apply_initial_cuts()
+            self.rsgcat.reset_index(inplace=True, drop=True)
+            self.rsgcat.loc[:, 'index'] = self.rsgcat.index
+
+        for p_ in self.mcfit_params:
+            self.rsgcat.loc[:, [p_+'_mc', p_+'_elow', p_+'_eup', p_+'_best']] = np.nan
+        self.rsgcat.loc[:, ['chi_posterior', 'chi_best']] = np.nan
+
+        argument_list = []
+        for idx_ in self.rsgcat.index:
+            argument_list.append([self.rsgcat.loc[idx_]])
+
+        multiprocessing_logging.install_mp_handler(self.logger)
+        p = Pool(initializer=self.mp_init, processes=self.ncores)
+        result = p.starmap_async(self.parallel_mc_worker, argument_list)
+        result.get()
+
+        self.rsgcat.to_csv(os.path.join(self.photfile_path, f'rsgcat_{self.gal}_mcmc.csv'))
+
     
 if __name__=='__main__':
     parser = create_parser()
@@ -298,4 +391,4 @@ if __name__=='__main__':
                               keep_narrow=args.keep_narrow, 
                               ncores=args.ncores,
                               ignore_filts=args.ignore_filts)
-    rsgcat = sedfit.apply_initial_cuts()
+    sedfit.run_sed_fit()
