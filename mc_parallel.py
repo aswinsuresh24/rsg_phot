@@ -1,23 +1,11 @@
 import warnings
 warnings.simplefilter('ignore')
 import numpy as np
-from synphot import SpectralElement
-from synphot.models import Empirical1D
 import os, glob
-import emcee
-import dust
-import progressbar
 import sys
 import astropy.units as u
 import astropy.constants as const
 import traceback
-import pickle
-from astropy.io import fits, ascii
-from scipy import interpolate
-from scipy.integrate import simpson
-import matplotlib as mpl
-import matplotlib.pyplot as plt
-from astropy.io.misc.hdf5 import read_table_hdf5
 import pandas as pd
 import itertools
 from tqdm import tqdm
@@ -27,6 +15,7 @@ from multiprocessing import Pool
 import argparse
 import logging
 import multiprocessing_logging
+from datetime import datetime
 
 def create_parser():
     '''
@@ -55,13 +44,22 @@ class parallel_sed_fit(object):
     def __init__(self, gal, photfile_path, dm=30, dmerr=0.5, z=0.0, trgb=('F090W', 30),
                  keep_narrow=False, ncores=10, ignore_filts=[], rsgcat=None):
         
-        self.logger = self.getLogger("DEBUG",) # logfile=os.path.join(self.photfile_path, 'mcmc.log'))
-
         self.gal = gal
         self.photfile_path = photfile_path
-        self.cat = self.read_cat(self.photfile_path)
-        self.set_cols()
-        self.rsgcat = rsgcat
+        self.backend_dir = os.path.join(self.photfile_path, 'backends')
+        os.makedirs(self.backend_dir, exist_ok=True)
+        self.logger = self.getlogger()
+
+        if rsgcat is not None:
+            self.rsgcat = rsgcat
+            self.rsgcat.reset_index(inplace=True, drop=True)
+            self.rsgcat.loc[:, 'index'] = self.rsgcat.index
+            self.set_cols(self.rsgcat)
+        else:
+            self.cat = self.read_cat(self.photfile_path)
+            self.set_cols(self.cat)
+            self.rsgcat = None
+
         self.dm, self.dmerr = dm, dmerr
         self.z = z
         self.ncores = ncores
@@ -73,7 +71,8 @@ class parallel_sed_fit(object):
         self.wv_all = [float(i.replace('F', '').replace('W2', '').replace('M', '').replace('N', '').replace('W', ''))/100 
                        for i in self.nrc_filts]
         self.gen_mc_obj = mcmc(dm=self.dm, dmerr=self.dmerr, z=self.z)
-        self.gen_mc_obj.verbose = True
+        self.gen_mc_obj.verbose = False
+        self.gen_mc_obj.dirs['backends'] = self.backend_dir
         self.keep_narrow = keep_narrow
         self.trgb = trgb
         self.trgb = (int(np.where(self.nrc_filts==self.trgb[0].upper())[0][0]), self.trgb[1])
@@ -105,17 +104,33 @@ class parallel_sed_fit(object):
 
         return cat
     
-    def getLogger(self, level, logfile=None):
+    def set_cols(self, cat):
+        fls = ['mag' in i for i in cat.columns]
+        fls = cat.columns[fls]
+        cat_wv = np.array([float(i[1:4])/100 for i in fls])
+        flts = [i.replace('_mag','') for i in fls]
+        magcols = [i+'_mag' for i in flts]
+        errcols = [i+'_err' for i in flts]
+
+        self.cols = {'flts' : flts,
+                     'magcols' : magcols,
+                     'errcols' : errcols,
+                     'cat_wv': cat_wv}
+    
+    def getlogger(self, logfile=None):
+        for handler in logging.root.handlers[:]:
+            logging.root.removeHandler(handler)
+
+        logging.basicConfig(level=logging.INFO,
+                            format='%(name)s [@ %(asctime)s] [l %(lineno)d] - %(levelname)s - %(message)s',
+                            datefmt='%a, %d %b %Y %H:%M:%S',
+                            filename= logfile,
+                            filemode='w')
+
+        console = logging.StreamHandler()
+        console.setLevel(logging.DEBUG)
         logger = logging.getLogger("rsg_sedfit")
-        formatter = logging.Formatter('%(name)s [l %(lineno)d] - %(levelname)s - %(message)s')
-        handler = logging.StreamHandler(sys.stdout)
-        handler.setFormatter(formatter)
-        logger.addHandler(handler)
-        if logfile is not None:
-            handler = logging.FileHandler(logfile)
-            handler.setFormatter(formatter)
-            logger.addHandler(handler)
-        logger.setLevel(level)
+        logger.addHandler(console)
         return logger
 
     def mp_init(init_success: int = 0,
@@ -294,19 +309,6 @@ class parallel_sed_fit(object):
         self.logger.info(f'RSG catalog contains {len(rsgcat)} objects after chisq cuts')
         return rsgcat
     
-    def set_cols(self):
-        fls = ['mag' in i for i in self.cat.columns]
-        fls = self.cat.columns[fls]
-        cat_wv = np.array([float(i[1:4])/100 for i in fls])
-        flts = [i.replace('_mag','') for i in fls]
-        magcols = [i+'_mag' for i in flts]
-        errcols = [i+'_err' for i in flts]
-
-        self.cols = {'flts' : flts,
-                     'magcols' : magcols,
-                     'errcols' : errcols,
-                     'cat_wv': cat_wv}
-    
     def apply_initial_cuts(self):
         base_rsgcat = self.base_cuts(self.cat, self.cols['magcols'])
         base_rsgcat = self.color_cuts(base_rsgcat, self.cols['magcols'])
@@ -315,8 +317,7 @@ class parallel_sed_fit(object):
         rsgcat = self.chimin_cuts(base_rsgcat, modeldf)
         return rsgcat
 
-    def parallel_mc_worker(self, col, nsteps=350, nwalkers=64, burn_in=75):
-        self.logger.info(f"Running MCMC on index {int(col['index'])}")
+    def gen_phot(self, col, noise_floor=0.01):
         phot = {'mag': col[self.cols['magcols']].values,
                 'magerr': col[self.cols['errcols']].values,
                 'inst_filt': np.array(self.cols['flts']),
@@ -329,32 +330,37 @@ class parallel_sed_fit(object):
                 phot['magerr'] = phot['magerr'][~fl_mask]
                 phot['inst_filt'] = phot['inst_filt'][~fl_mask]
 
-        limmask = (phot['mag'] > 90.0) | (phot['magerr'] > 90.0) | (np.isnan(phot['mag'])) | (np.isnan(phot['magerr']))
+        limmask = (phot['mag'] > 90.0) | (phot['magerr'] > 90.0) | (np.isnan(phot['mag'])) | (np.isnan(phot['magerr'])) | (phot['magerr'] < 1e-4)
         phot['mag'] = phot['mag'][~limmask]
-        phot['magerr'] = phot['magerr'][~limmask]
+        phot['magerr'] = np.sqrt(phot['magerr'][~limmask]**2 + noise_floor**2)
         phot['inst_filt'] = phot['inst_filt'][~limmask]
 
-        mc_obj = mcmc(dm=self.dm, dmerr=self.dmerr, z=self.z)
-        mc_obj.verbose = False
+        return phot
+    
+    def parallel_mc_worker(self, col, nsteps=350, nwalkers=64, burn_in=75):
+        try:
+            print(f"[{datetime.now().strftime('%a, %d %b %Y %H:%M:%S')}] Running MCMC on index {int(col['index'])}")
+            phot = self.gen_phot(col)
 
-        fit_params = mc_obj.run_emcee(phot, nsteps=nsteps, nwalkers=nwalkers, burn_in=burn_in)
-        fit_pe = np.array(list(fit_params.values()))
-        reader = mc_obj.load_backend(phot)
-        sample = np.array(reader.get_chain(flat=True, discard=burn_in, thin=1))
-        probs = np.array(reader.get_log_prob(flat=True, discard=burn_in, thin=1))
-        min_chi_params = sample[np.argmax(probs)]
+            mc_obj = mcmc(dm=self.dm, dmerr=self.dmerr, z=self.z)
+            mc_obj.verbose = False
+            mc_obj.dirs['backends'] = self.backend_dir
 
-        params = np.meshgrid(*fit_pe[:, 0], indexing='ij', sparse=True)
-        model_mag = np.array([mc_obj.model[f](params).flatten()[0] for f in phot['inst_filt']])+mc_obj.dm
-        chi_post = np.sum((phot['mag'] - model_mag)**2)/(len(model_mag)-1)
+            mc_obj.run_emcee(phot, nsteps=nsteps, nwalkers=nwalkers, burn_in=burn_in, 
+                             return_params=False, calculate_chi=False)
 
-        mc_params = np.meshgrid(*min_chi_params, indexing='ij', sparse=True)
-        chi_mag = np.array([mc_obj.model[f](mc_params).flatten()[0] for f in phot['inst_filt']])+mc_obj.dm
-        chi_best = 0.5*np.sum((phot['mag'] - chi_mag)**2)/(len(chi_mag)-1)
+        except Exception as e:
+            traceback.format_exc()
+
+    def read_mc_params(self, col, burn_in=75, thin=1, calculate_chi=True):
+        phot = self.gen_phot(col)
+        fit_params, min_chi_params, chi_posterior, chi_best = self.gen_mc_obj.read_params(phot, burn_in=burn_in, 
+                                                                                          thin=thin, calculate_chi=calculate_chi)
 
         for i, p_ in enumerate(fit_params.keys()):
-            self.rsgcat.loc[int(col['index']), [p_+'_mc', p_+'_elow', p_+'_eup', p_+'_best']] = list(fit_params[p_]) + [min_chi_params[i]] 
-        self.rsgcat.loc[int(col['index']), ['chi_posterior', 'chi_best']] = [chi_post, chi_best]
+            self.rsgcat.loc[int(col['index']), [p_+'_mc', p_+'_elow', p_+'_eup', p_+'_best']] = list(fit_params[p_]) + [min_chi_params[i]]
+
+        self.rsgcat.loc[int(col['index']), ['chi_posterior', 'chi_best']] = [chi_posterior, chi_best]
     
     def run_sed_fit(self):
         if self.rsgcat is None:
@@ -370,12 +376,20 @@ class parallel_sed_fit(object):
         for idx_ in self.rsgcat.index:
             argument_list.append([self.rsgcat.loc[idx_]])
 
+        # create argument list for starmap async
         multiprocessing_logging.install_mp_handler(self.logger)
         p = Pool(initializer=self.mp_init, processes=self.ncores)
         result = p.starmap_async(self.parallel_mc_worker, argument_list)
+
+        # run MCMC
+        self.logger.info(f"Starting MCMC")
         result.get()
 
-        self.rsgcat.to_csv(os.path.join(self.photfile_path, f'rsgcat_{self.gal}_mcmc.csv'))
+        # read backend file for each object to calculate best fit parameters and write to rsgcat
+        for idx_ in self.rsgcat.index:
+            self.read_mc_params(self.rsgcat.loc[idx_])
+
+        self.rsgcat.to_csv(os.path.join(self.photfile_path, f'rsgcat_{self.gal}_mcmc.csv'), index=False)
 
     
 if __name__=='__main__':

@@ -25,7 +25,7 @@ class mcmc(object):
         self.bounds = {
             'luminosity': [10**3.0, 10**6.0],
             'temperature': [2600.0, 5000.0], 
-            'tau_V': [0.01, 12.0],
+            'tau_V': [0.00, 12.0],
             'dust_temp': [200.0, 1800.0],
             'Av': [0.0, 5.0],
             'Rv': [2.0, 6.0]
@@ -126,16 +126,17 @@ class mcmc(object):
                 return(True)
         return(False)
     
-    def run_emcee(self, phot, nsteps=350, nwalkers=64, burn_in=75):
-        limmask = (phot['mag'] > 90.0) | (phot['magerr'] > 90.0) | (np.isnan(phot['mag'])) | (np.isnan(phot['magerr']))
-        phot['mag'] = phot['mag'][~limmask]
-        phot['magerr'] = phot['magerr'][~limmask]
-        phot['inst_filt'] = phot['inst_filt'][~limmask]
+    def run_emcee(self, phot, nsteps=350, nwalkers=64, burn_in=75, set_limmask=False, return_params=True, calculate_chi=False):
+        if set_limmask:
+            limmask = (phot['mag'] > 90.0) | (phot['magerr'] > 90.0) | (np.isnan(phot['mag'])) | (np.isnan(phot['magerr']))
+            phot['mag'] = phot['mag'][~limmask]
+            phot['magerr'] = phot['magerr'][~limmask]
+            phot['inst_filt'] = phot['inst_filt'][~limmask]
         self.phot = phot
         ndim = len(self.model_fit_params[self.model_type])
 
         #load backend
-        backend = self.load_backend(phot)
+        backend = self.load_backend(self.phot)
         use_backend_pos = False
         try:
             if os.path.exists(backend.filename):
@@ -166,6 +167,12 @@ class mcmc(object):
         # Run MCMC step
         sampler.run_mcmc(init_pos, nsteps, progress=self.verbose)
 
+        if return_params:
+            params = self.read_params(self.phot, burn_in=burn_in, calculate_chi=calculate_chi)
+            return params
+    
+    def read_params(self, phot, burn_in=75, thin=1, calculate_chi=False):
+        ndim = len(self.model_fit_params[self.model_type])
         # Read current model probabilities, samples, and blobs from backend
         reader = self.load_backend(phot)
         sample = np.array(reader.get_chain(flat=True))
@@ -179,13 +186,27 @@ class mcmc(object):
             print('\n\n')
 
         params = dict.fromkeys(self.model_fit_params[self.model_type])
-        converged_sample = np.array(reader.get_chain(flat=True, discard=burn_in))
-        converged_prob = np.array(reader.get_log_prob(flat=True, discard=burn_in))
+        converged_sample = np.array(reader.get_chain(flat=True, discard=burn_in, thin=thin))
+        converged_prob = np.array(reader.get_log_prob(flat=True, discard=burn_in, thin=thin))
+        converged_blob = np.array(reader.get_blobs(flat=True, discard=burn_in, thin=thin))
+
         for i,param in enumerate(self.model_fit_params[self.model_type]):
             p, p_elow, p_eup = self.calculate_param_best_fit(converged_sample[:,i], converged_prob, ndim, param, 
                                                              verbose=self.verbose, return_uncertainty=True)
             params[param] = (p, p_elow, p_eup)
 
+        if calculate_chi:
+            fit_pe = np.array(list(params.values()))
+            min_chi_params = sample[np.argmax(converged_prob)]
+
+            posterior_params = np.meshgrid(*fit_pe[:, 0], indexing='ij', sparse=True)
+            model_mag = np.array([self.model[f](posterior_params).flatten()[0] for f in phot['inst_filt']])+self.dm
+            chi_posterior = np.sum((phot['mag'] - model_mag)**2)/(len(model_mag)-1)
+
+            mc_params = np.meshgrid(*min_chi_params, indexing='ij', sparse=True)
+            chi_mag = np.array([self.model[f](mc_params).flatten()[0] for f in phot['inst_filt']])+self.dm
+            chi_best = 0.5*np.sum((phot['mag'] - chi_mag)**2)/(len(chi_mag)-1)
+            return (params, min_chi_params, chi_posterior, chi_best)
         return params
 
     def log_likelihood(self, theta):
