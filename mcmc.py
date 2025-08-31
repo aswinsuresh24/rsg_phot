@@ -37,9 +37,10 @@ class mcmc(object):
         self.backend = None
         self.dm = dm - 30.0
         self.verbose = False
+        self.comp = comp
         self.dirs = {
             'bandpass':'data/bandpass',
-            'model_grid':os.path.join('data', 'interpolate', f'{model_type}_{comp}_r{shell}_z{z:.2f}_ext.pkl'),
+            'model_grid':os.path.join('data', 'interpolate', f'{self.model_type}_{self.comp}_r{shell}_z{z:.2f}_ext.pkl'),
             'backends':'data/backends'
         }
         with open(self.dirs['model_grid'], 'rb') as f:
@@ -97,7 +98,8 @@ class mcmc(object):
         name = ''+objname
         for i,m,e in zip(phot['inst_filt'],phot['mag'],phot['magerr']):
             name += i+'='+str('%7.4f'%m)+'+/-'+str('%7.4f'%e)
-            name = name.replace(' ','')
+        name = name+self.comp
+        name = name.replace(' ','')
 
         newname = ''
         for c in name:
