@@ -42,7 +42,7 @@ def create_parser():
 
 class parallel_sed_fit(object):
     def __init__(self, gal, photfile_path, dm=30, dmerr=0.5, z=0.0, trgb=('F090W', 30),
-                 keep_narrow=False, ncores=10, ignore_filts=[], rsgcat=None):
+                 comp='sil', keep_narrow=False, ncores=10, ignore_filts=[], rsgcat=None):
         
         self.gal = gal
         self.photfile_path = photfile_path
@@ -62,6 +62,7 @@ class parallel_sed_fit(object):
 
         self.dm, self.dmerr = dm, dmerr
         self.z = z
+        self.comp = comp
         self.ncores = ncores
 
         self.nrc_filts = np.array(['F070W','F090W','F115W','F140M','F150W', 'F150W2', 'F162M',
@@ -70,7 +71,7 @@ class parallel_sed_fit(object):
                                     'F405N','F410M','F430M','F444W','F460M','F466N','F470N','F480M'])
         self.wv_all = [float(i.replace('F', '').replace('W2', '').replace('M', '').replace('N', '').replace('W', ''))/100 
                        for i in self.nrc_filts]
-        self.gen_mc_obj = mcmc(dm=self.dm, dmerr=self.dmerr, z=self.z)
+        self.gen_mc_obj = mcmc(dm=self.dm, dmerr=self.dmerr, z=self.z, comp=self.comp)
         self.gen_mc_obj.verbose = False
         self.gen_mc_obj.dirs['backends'] = self.backend_dir
         self.keep_narrow = keep_narrow
@@ -241,7 +242,7 @@ class parallel_sed_fit(object):
         return rsgcat
     
     def create_modeldf(self):
-        outpath = os.path.join(self.photfile_path, f'{self.gal}_modeldf.csv')
+        outpath = os.path.join(self.photfile_path, f'{self.gal}_{self.comp}_modeldf.csv')
         if os.path.exists(outpath):
             modeldf = pd.read_csv(outpath)
         else:

@@ -13,6 +13,8 @@ import traceback
 import math
 import pickle
 import random
+from astropy.stats import sigma_clipped_stats as scs
+import time
 
 DUST_BB_MASS = 2.4319771e-12
 RSG_V_WIND = 50.0 * u.km/u.s
@@ -33,14 +35,21 @@ class mcmc(object):
 
         self.model_type = model_type
         self.model_fit_params = {'rsg': ['temperature', 'dust_temp', 'tau_V', 'luminosity', 'Rv', 'Av'],
-                                 'rsg_notau': ['temperature', 'dust_temp', 'tau_V', 'luminosity']}
+                                 'rsg_nolum': ['temperature', 'dust_temp', 'tau_V', 'Rv', 'Av'],
+                                 'rsg_notau': ['temperature', 'dust_temp', 'tau_V', 'luminosity', 'Av']}
+        self.blobs_dtype = {'rsg': None,
+                            'rsg_nolum': None, #[("lum", float)],
+                            'rsg_notau': None}
+        self.log_likelihood_fn = {'rsg': self.log_likelihood,
+                                  'rsg_nolum': self.log_likelihood_lum,
+                                  'rsg_notau': self.log_likelihood_tau}
         self.backend = None
         self.dm = dm - 30.0
         self.verbose = False
         self.comp = comp
         self.dirs = {
             'bandpass':'data/bandpass',
-            'model_grid':os.path.join('data', 'interpolate', f'{self.model_type}_{self.comp}_r{shell}_z{z:.2f}_ext.pkl'),
+            'model_grid':os.path.join('data', 'interpolate', f'{self.model_type.split('_')[0]}_{self.comp}_r{shell}_z{z:.2f}_ext.pkl'),
             'backends':'data/backends'
         }
         with open(self.dirs['model_grid'], 'rb') as f:
@@ -163,8 +172,9 @@ class mcmc(object):
             init_pos = self.get_init_pos(ndim, nwalkers)
 
         # Construct emcee sampler with parameters derived above
-        sampler = emcee.EnsembleSampler(nwalkers, ndim, self.log_likelihood, backend=backend, 
-                                        moves=[(emcee.moves.KDEMove(), 1.0)])
+        sampler = emcee.EnsembleSampler(nwalkers, ndim, self.log_likelihood_fn[self.model_type], 
+                                        backend=backend, moves=[(emcee.moves.KDEMove(), 1.0)], 
+                                        blobs_dtype=self.blobs_dtype[self.model_type])
 
         # Run MCMC step
         sampler.run_mcmc(init_pos, nsteps, progress=self.verbose)
@@ -228,9 +238,50 @@ class mcmc(object):
 
         return(chi2)
     
+    def log_likelihood_lum(self, theta):
+        if self.check_bounds(theta):
+            return(-np.inf)
+        theta = np.insert(theta, 3, 1e3)
+
+        params = np.meshgrid(*theta, indexing='ij', sparse=True)
+        model_mag = np.array([self.model[f](params).flatten()[0] for f in self.phot['inst_filt']])+self.dm
+
+        submag = model_mag - self.phot['mag'] #- model_mag
+        lum_mean = np.mean(submag)
+        submag -= lum_mean
+
+        if any(np.isnan(model_mag)):
+            return(-np.inf)
+        
+        chi2 = -0.5*np.sum(submag**2/self.phot['magerr']**2) / (len(model_mag) - 1)
+        if np.isnan(chi2):
+            print(f'likelihood is nan for {theta}')
+            return(-np.inf)
+
+        return chi2
+    
+    def log_likelihood_tau(self, theta):
+        if self.check_bounds(theta):
+            return(-np.inf)
+
+        params = np.meshgrid(*theta[:-1], 4.0, theta[-1], indexing='ij', sparse=True)
+        model_mag = np.array([self.model[f](params).flatten()[0] for f in self.phot['inst_filt']])+self.dm
+
+        if any(np.isnan(model_mag)):
+            return(-np.inf)
+
+        chi2 = -0.5*np.sum((self.phot['mag']-model_mag)**2/self.phot['magerr']**2) / (len(model_mag) - 1)
+        if np.isnan(chi2):
+            print(f'likelihood is nan for {theta}')
+            return(-np.inf)
+
+        return chi2
+    
     def sample_params(self, params, prob, ndim, nsamples=None, downsample=1.0):
 
         mask = np.isinf(np.abs(prob)) | np.isnan(prob)
+        _, prob_median, prob_sig = scs(prob)
+        mask = mask & (prob > prob_median - prob_sig)
         if all(mask):
             print('WARNING: all probabilities are bad.  Try wider param range')
             return(params[0])
@@ -267,8 +318,10 @@ class mcmc(object):
         if not sampled:
             params_sample, prob_sample = self.sample_params(params, prob, ndim)
         else:
-            params_sample = params
-            prob_sample = prob
+            _, prob_median, prob_sig = scs(prob)
+            mask = (prob > prob_median - prob_sig)
+            params_sample = params[mask]
+            prob_sample = prob[mask]
 
         n = int(self.significant_figures)
         out_fmt = '{0:<18}: {1:>12} + {2:>12} - {3:>12}'
