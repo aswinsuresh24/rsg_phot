@@ -371,6 +371,6 @@ class mcmc(object):
         if verbose: print(out_fmt.format(name, mcmc, maxval, minval))
 
         if return_uncertainty:
-            return(best, float(maxval), float(minval))
+            return(best, float(minval), float(maxval))
         else:
             return(best)

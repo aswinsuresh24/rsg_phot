@@ -42,7 +42,8 @@ def create_parser():
 
 class parallel_sed_fit(object):
     def __init__(self, gal, photfile_path, dm=30, dmerr=0.5, z=0.0, trgb=('F090W', 30),
-                 comp='sil', keep_narrow=False, ncores=10, ignore_filts=[], rsgcat=None):
+                 comp='sil', keep_narrow=False, ncores=10, agbcut = True, ignore_filts=[], 
+                 rsgcat=None):
         
         self.gal = gal
         self.photfile_path = photfile_path
@@ -64,6 +65,7 @@ class parallel_sed_fit(object):
         self.z = z
         self.comp = comp
         self.ncores = ncores
+        self.agbcut = agbcut
 
         self.nrc_filts = np.array(['F070W','F090W','F115W','F140M','F150W', 'F150W2', 'F162M',
                                     'F164N','F182M','F187N','F200W','F210M','F212N','F250M',
@@ -113,9 +115,9 @@ class parallel_sed_fit(object):
         magcols = [i+'_mag' for i in flts]
         errcols = [i+'_err' for i in flts]
 
-        self.cols = {'flts' : flts,
-                     'magcols' : magcols,
-                     'errcols' : errcols,
+        self.cols = {'flts' : np.array(flts),
+                     'magcols' : np.array(magcols),
+                     'errcols' : np.array(errcols),
                      'cat_wv': cat_wv}
     
     def getlogger(self, logfile=None):
@@ -304,18 +306,27 @@ class parallel_sed_fit(object):
             base_rsgcat.loc[idx, ['teff_chisq', 'tdust_chisq', 'tau_chisq', 'av_chisq']] = modeldf.loc[m_, ['Teff', 'Tdust', 'Tau', 'Av']].values
 
         chi_cut = 2*np.nanmedian(base_rsgcat['chimin'])
-        agb_cut = (base_rsgcat['teff_chisq'] <= 3300) | (base_rsgcat['teff_chisq'] >= 4700) | (base_rsgcat['chimin'] > chi_cut)
+        if self.agbcut:
+            tm = (rsgcat['teff_chisq'] > 3300) & (rsgcat['teff_chisq'] < 4700)
+            tum = rsgcat['tau_chisq'].values > 1
+            lm = np.log10(rsgcat['lum_chisq'].values) > 4.5
+            mask = chi_cut & (tm | tum | lm)
+        else:
+            mask = rsgcat['chimin'] < chi_cut
 
-        rsgcat = base_rsgcat[~agb_cut]
+        rsgcat = base_rsgcat[mask]
         self.logger.info(f'RSG catalog contains {len(rsgcat)} objects after chisq cuts')
         return rsgcat
     
     def apply_initial_cuts(self):
+        if not self.agbcut:
+            self.logger.info(f'WARNING: AGB cut set to {self.agbcut}')
         base_rsgcat = self.base_cuts(self.cat, self.cols['magcols'])
         base_rsgcat = self.color_cuts(base_rsgcat, self.cols['magcols'])
 
         modeldf = self.create_modeldf()
         rsgcat = self.chimin_cuts(base_rsgcat, modeldf)
+        rsgcat.to_csv(os.path.join(self.photfile_path, f'{self.gal}_{self.comp}_rsgcat.csv'))
         return rsgcat
 
     def gen_phot(self, col, noise_floor=0.01):
