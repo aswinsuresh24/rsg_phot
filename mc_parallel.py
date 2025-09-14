@@ -305,28 +305,29 @@ class parallel_sed_fit(object):
             base_rsgcat.loc[idx, ['chimin', 'lum_chisq']] = c_, l_
             base_rsgcat.loc[idx, ['teff_chisq', 'tdust_chisq', 'tau_chisq', 'av_chisq']] = modeldf.loc[m_, ['Teff', 'Tdust', 'Tau', 'Av']].values
 
-        chi_cut = 2*np.nanmedian(base_rsgcat['chimin'])
+        chi_cut = np.percentile(base_rsgcat['chimin'], 75)
         if self.agbcut:
-            tm = (rsgcat['teff_chisq'] > 3300) & (rsgcat['teff_chisq'] < 4700)
-            tum = rsgcat['tau_chisq'].values > 1
-            lm = np.log10(rsgcat['lum_chisq'].values) > 4.5
+            tm = (base_rsgcat['teff_chisq'] > 3300) & (base_rsgcat['teff_chisq'] < 4700)
+            tum = base_rsgcat['tau_chisq'].values > 1
+            lm = np.log10(base_rsgcat['lum_chisq'].values) > 4.5
             mask = chi_cut & (tm | tum | lm)
         else:
-            mask = rsgcat['chimin'] < chi_cut
+            mask = base_rsgcat['chimin'] < chi_cut
 
         rsgcat = base_rsgcat[mask]
         self.logger.info(f'RSG catalog contains {len(rsgcat)} objects after chisq cuts')
         return rsgcat
     
-    def apply_initial_cuts(self):
+    def apply_initial_cuts(self, colcuts=True):
         if not self.agbcut:
             self.logger.info(f'WARNING: AGB cut set to {self.agbcut}')
         base_rsgcat = self.base_cuts(self.cat, self.cols['magcols'])
-        base_rsgcat = self.color_cuts(base_rsgcat, self.cols['magcols'])
+        if colcuts:
+            base_rsgcat = self.color_cuts(base_rsgcat, self.cols['magcols'])
 
         modeldf = self.create_modeldf()
         rsgcat = self.chimin_cuts(base_rsgcat, modeldf)
-        rsgcat.to_csv(os.path.join(self.photfile_path, f'{self.gal}_{self.comp}_rsgcat.csv'))
+        rsgcat.to_csv(os.path.join(self.photfile_path, f'{self.gal}_{self.comp}_rsgcat_test.csv'))
         return rsgcat
 
     def gen_phot(self, col, noise_floor=0.01):
