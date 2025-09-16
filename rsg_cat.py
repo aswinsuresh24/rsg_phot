@@ -4,6 +4,8 @@ import numpy as np
 from tqdm import tqdm
 import glob, os
 import itertools
+from astropy import wcs
+from astropy.io import fits
 
 def get_filters(columns):
     """
@@ -78,9 +80,10 @@ def map_columns(columns):
     #get column indices for individual images
     filt_dict = {key: [] for key in filters}
     for filter_ in filters:
-        flt_keys = ['Counts', 'Err', 'Flag']
+        flt_keys = ['Counts', 'Err', 'Flag', 'LC', 'LC_err', 'Img']
         flt_dict = {key: [] for key in flt_keys}
         idx_cts, idx_err, idx_flag = [], [], []
+        idx_lc, idx_img, idx_lcerr = [], [], []
         for line in lines:
             #get column indices for counts, errors and flags
             #count uncertainty is used to get the index since 'Normalized count rate' is not unique
@@ -89,15 +92,25 @@ def map_columns(columns):
                 idx_cts.append(str(idx - 1))
                 idx_err.append(str(idx))
                 idx_flag.append(str(idx + 9))
+            if (filter_ in line) & ('Instrumental VEGAMAG magnitude' in line):
+                idx = int(line.split(' ')[0].split('.')[0]) - 1
+                idx_lc.append(str(idx))
+                idx_lcerr.append(str(idx + 2))
+                mask = ['jhat' in i for i in line.split(' ')]
+                imgname = np.array(line.split(' '))[mask][0]
+                idx_img.append(imgname)
         #first index corresponds to combined photometry
         flt_dict['Counts'] = idx_cts[1:]
         flt_dict['Err'] = idx_err[1:]
         flt_dict['Flag'] = idx_flag[1:]
+        flt_dict['LC'] = idx_lc
+        flt_dict['LC_err'] = idx_lcerr
+        flt_dict['Img'] = idx_img
         filt_dict[filter_] = flt_dict
     
     return col_dict, filters, filt_dict
 
-def save_photfiles(photfile_path, outdir, chunksize = 100000):
+def save_photfiles(photfile_path, outdir, chunksize=100000, lc=False):
     """
     save photometry files with cuts applied to smaller csv files
 
@@ -111,6 +124,8 @@ def save_photfiles(photfile_path, outdir, chunksize = 100000):
         object name
     chunksize : int
         number of rows to read from photometry file at a time
+    lc : bool
+        keep columns corresponding to individual image photometry
 
     Returns
     -------
@@ -120,13 +135,16 @@ def save_photfiles(photfile_path, outdir, chunksize = 100000):
         os.makedirs(outdir)
   
     photfiles = sorted(glob.glob(os.path.join(photfile_path, '*phot')))
-    for i, photfile in enumerate(photfiles):
+    refimgs = sorted(glob.glob(os.path.join(photfile_path, '*i2d.fits')))
+    for i, (photfile, refimg) in enumerate(zip(photfiles, refimgs)):
         column_file = photfile + '.columns'
         #map columns to indices
         col_idx, filters, _ = map_columns(column_file)
+        gid = '_'.join(os.path.basename(photfile).split('.phot')[0].split('_')[1:])
+        refwcs = wcs.WCS(fits.open(refimg)[1].header)
 
         #read photometry file in chunks
-        photdf = pd.read_csv(photfile, sep = '\s+', memory_map = True, 
+        photdf = pd.read_csv(photfile, sep = r'\s+', memory_map = True, 
                              header = None, iterator = True, chunksize = chunksize)
         
         for j, _df in tqdm(enumerate(photdf)):
@@ -136,8 +154,18 @@ def save_photfiles(photfile_path, outdir, chunksize = 100000):
                     (_df[col_idx['Crowding']] <= 1.5) & \
                     (_df[col_idx['Type']] <= 2)
             _df = _df[cuts]
-            _df = _df[list(col_idx.values())]
-            _df.columns = list(col_idx.keys())
+
+            _ra, _dec = refwcs.all_pix2world(_df[col_idx['X']], _df[col_idx['Y']], 0)
+            _df['RA'] = _ra
+            _df['Dec'] = _dec
+            _df['gid'] = gid
+            _df['id'] = np.array(_df.index)
+
+            if lc:
+                pass
+            else:
+                _df = _df[list(col_idx.values())]
+                _df.columns = list(col_idx.keys())
+
             _df.to_csv(f"{outdir}/{os.path.basename(photfile).split('.')[0]}_{j}.csv", 
                        mode = 'a', header = True, index = False)
-            
