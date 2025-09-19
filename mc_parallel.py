@@ -28,7 +28,8 @@ def create_parser():
     '''
     parser = argparse.ArgumentParser(description='Fit red supergiant SEDs')
     parser.add_argument('--gal', type=str, default='gal', help='Galaxy name')
-    parser.add_argument('--photfile_path', type=str, default='.', help='Root directory to search for photometry')
+    parser.add_argument('--procdir', type=str, default='.', help='Directory to save processed photometry')
+    parser.add_argument('--photfile_path', type=str, default='.', help='Root directory to search for dolphot photometry')
     parser.add_argument('--dm', type=float, default=30, help='Distance modulus')
     parser.add_argument('--dmerr', type=float, default=0.5, help='Distance modulus error')
     parser.add_argument('--z', type=float, default=0.0, help='Metallicity')
@@ -41,13 +42,15 @@ def create_parser():
 
 
 class parallel_sed_fit(object):
-    def __init__(self, gal, photfile_path, dm=30, dmerr=0.5, z=0.0, trgb=('F090W', 30),
-                 comp='sil', keep_narrow=False, ncores=10, agbcut = True, ignore_filts=[], 
-                 rsgcat=None):
+    def __init__(self, gal, procdir, photfile_path=None, dm=30, dmerr=0.5, z=0.00, 
+                 trgb=('F090W', 30), comp='sil', keep_narrow=False, ncores=10, 
+                 agbcut = True, ignore_filts=[], rsgcat=None):
         
         self.gal = gal
+        self.procdir = procdir
+        os.makedirs(self.procdir, exist_ok=True)
         self.photfile_path = photfile_path
-        self.backend_dir = os.path.join(self.photfile_path, 'backends')
+        self.backend_dir = os.path.join(self.procdir, 'backends')
         os.makedirs(self.backend_dir, exist_ok=True)
         self.logger = self.getlogger()
 
@@ -57,12 +60,19 @@ class parallel_sed_fit(object):
             self.rsgcat.loc[:, 'index'] = self.rsgcat.index
             self.set_cols(self.rsgcat)
         else:
+            if self.photfile_path is None:
+                raise ValueError('At least one of rsgcat or photfile_path is required as input')
             self.cat = self.read_cat(self.photfile_path)
             self.set_cols(self.cat)
             self.rsgcat = None
 
         self.dm, self.dmerr = dm, dmerr
         self.z = z
+        #BUG: fix interpolated model at Z=0.0 and remove factor
+        if self.z == 0.0:
+            self.factor = 10.0
+        else:
+            self.factor = 0.0
         self.comp = comp
         self.ncores = ncores
         self.agbcut = agbcut
@@ -85,10 +95,11 @@ class parallel_sed_fit(object):
             'tau_' : np.array(list(np.linspace(0.01, 2, 21)) + list(np.arange(2.5, 5.5, 0.5))),
             'Av_' : np.array(list(np.linspace(0, 1, 5))+ list(np.linspace(1.5, 3, 4)))
         }
+        self.chimin_modeldir = os.path.join('data', 'chimin_models')
         self.mcfit_params = np.array(['temperature', 'dust_temp', 'tau_V', 'luminosity', 'Rv', 'Av'])
         
     def read_cat(self, photfile_path):
-        catpath = os.path.join(photfile_path, 'proc')
+        catpath = os.path.join(self.procdir, 'proc')
         os.makedirs(catpath, exist_ok=True)
         if len(glob.glob(os.path.join(catpath, '*csv'))) == 0:
             save_photfiles(photfile_path, catpath)
@@ -155,25 +166,25 @@ class parallel_sed_fit(object):
             mir_dets = cat_mags_det[cat_mags_det.columns[(cat_wv > 2.6)]]
 
             ndetm = cat_mags_det.sum(axis=1) > min_det
-            detm = (opt_dets.sum(axis=1) > 0) & (nir_dets.sum(axis=1) > 1) & (mir_dets.sum(axis=1) > 1) & ndetm
+            detm = (opt_dets.sum(axis=1) > 0) & (nir_dets.sum(axis=1) > 0) & (mir_dets.sum(axis=1) > 0) & ndetm
 
             return detm
         
         self.logger.info(f'Applying ndet cuts')
-        self.gen_mc_obj.bounds['luminosity'] = [10**3.5, 10**3.6]
+        self.gen_mc_obj.bounds['luminosity'] = [10**4.0, 10**4.1]
 
         base_models = np.zeros((2000, len(self.nrc_filts)))
         basedf_cols = [i+'_mag' for i in self.nrc_filts]
 
         sample_params = self.gen_mc_obj.get_init_pos(6, 1000)
         for i, p_ in enumerate(sample_params):
-            model_mag = np.array([self.gen_mc_obj.model[f](sample_params[i]).flatten()[0] for f in self.nrc_filts]) + self.gen_mc_obj.dm
+            model_mag = np.array([self.gen_mc_obj.model[f](sample_params[i]).flatten()[0] for f in self.nrc_filts]) + self.gen_mc_obj.dm + self.factor
             base_models[i, :] = model_mag
 
         self.gen_mc_obj.bounds['luminosity'] = [10**5.8, 10**6]
         sample_params = self.gen_mc_obj.get_init_pos(6, 1000)
         for i, p_ in enumerate(sample_params):
-            model_mag = np.array([self.gen_mc_obj.model[f](sample_params[i]).flatten()[0] for f in self.nrc_filts]) + self.gen_mc_obj.dm
+            model_mag = np.array([self.gen_mc_obj.model[f](sample_params[i]).flatten()[0] for f in self.nrc_filts]) + self.gen_mc_obj.dm + self.factor
             base_models[i+1000, :] = model_mag
 
         min_model = np.max(base_models[base_models[:, self.trgb[0]] < self.trgb[1]], axis=0)
@@ -205,13 +216,13 @@ class parallel_sed_fit(object):
         
         self.gen_mc_obj.reset_bounds()
         self.gen_mc_obj.bounds['luminosity'] = [10**3.5, 10**6.0]
-        self.gen_mc_obj.bounds['temperature'] = [3500., 5000.]
+        self.gen_mc_obj.bounds['temperature'] = [2600., 5000.]
 
         sample_models = np.zeros((10000, len(self.nrc_filts)))
         sample_params = self.gen_mc_obj.get_init_pos(6, 10000)
 
         for i, p_ in enumerate(sample_params):
-            model_mag = np.array([self.gen_mc_obj.model[f](sample_params[i]).flatten()[0] for f in self.nrc_filts]) + self.gen_mc_obj.dm
+            model_mag = np.array([self.gen_mc_obj.model[f](sample_params[i]).flatten()[0] for f in self.nrc_filts]) + self.gen_mc_obj.dm + self.factor
             sample_models[i, :] = model_mag
 
         for i, j in zip(idx_iterator, cmb_iterator):
@@ -227,7 +238,7 @@ class parallel_sed_fit(object):
                 cl_max = cl_max + (min_width - cld)/2
             color_dict[index] = (cl_min, cl_max)
 
-        nwm = np.array(['N' in i for i in fls]) | np.array(['300M' in i for i in fls])
+        nwm = np.array(['N' in i for i in fls]) #| np.array(['300M' in i for i in fls])
         mfls = fls[~nwm]
 
         colorm = np.array([True]*len(cat_mags))
@@ -243,12 +254,16 @@ class parallel_sed_fit(object):
         self.logger.info(f'RSG catalog contains {len(rsgcat)} objects after color cuts')
         return rsgcat
     
-    def create_modeldf(self):
-        outpath = os.path.join(self.photfile_path, f'{self.gal}_{self.comp}_modeldf.csv')
+    def create_modeldf(self, outpath=None):
+        if outpath is None:
+            outpath = os.path.join(self.chimin_modeldir, f'{self.comp}_z{self.z:.2f}_modeldf.csv')
+
+        # if modeldf for composition and metalllicity exists, read it
         if os.path.exists(outpath):
             modeldf = pd.read_csv(outpath)
+        # else create a distance-agnostic grid (needs to be done once)
         else:
-            self.logger.info(f'Creating modeldf: {outpath}')
+            self.logger.info(f'Creating modeldf for comp={self.comp}, Z={self.z:.2f}: {outpath}')
             modeldf = pd.DataFrame(columns = ['Teff', 'Tdust', 'Tau', 'Av'] + list(self.nrc_filts))
             self.gen_mc_obj.reset_bounds()
             for a1 in tqdm(self.chimin_params['teff_']):
@@ -256,10 +271,15 @@ class parallel_sed_fit(object):
                     for a3 in self.chimin_params['tau_']:
                         for a4 in self.chimin_params['Av_']:
                             pm_ = [a1, a2, a3, 1e3, 3.1, a4]
-                            model_mag = np.array([self.gen_mc_obj.model[f](pm_).flatten()[0] for f in self.nrc_filts]) + self.gen_mc_obj.dm
+                            model_mag = np.array([self.gen_mc_obj.model[f](pm_).flatten()[0] for f in self.nrc_filts])
                             modeldf.loc[len(modeldf), ['Teff', 'Tdust', 'Tau', 'Av'] + list(self.nrc_filts)] = [a1, a2, a3, a4] + list(model_mag)
 
             modeldf.to_csv(outpath, index=False)
+
+        # add distance to galaxy to modeldf
+        magcols = ['F' in i for i in modeldf.columns]
+        magcols = modeldf.columns[magcols]
+        modeldf[magcols] = modeldf[magcols] + self.gen_mc_obj.dm + self.factor
         return modeldf
     
     def chimin(self, phot, modeldf):
@@ -273,7 +293,7 @@ class parallel_sed_fit(object):
 
         bestparams = modeldf.loc[minchisq, ['Teff', 'Tdust', 'Tau', 'Av']].values
         pm_ = [bestparams[0], bestparams[1], bestparams[2], 1e3, 3.1, bestparams[3]]
-        bestmodel = np.array([self.gen_mc_obj.model[f](pm_).flatten()[0] for f in phot['inst_filt']]) + self.gen_mc_obj.dm
+        bestmodel = np.array([self.gen_mc_obj.model[f](pm_).flatten()[0] for f in phot['inst_filt']]) + self.gen_mc_obj.dm + self.factor
         lum = 10**(np.mean((phot['mag'] - bestmodel)/-2.5)) * 1e3
 
         return chisq[minchisq], minchisq, lum      
@@ -284,13 +304,13 @@ class parallel_sed_fit(object):
         for idx in tqdm(base_rsgcat.index):
             testcol = base_rsgcat.loc[idx]
 
-            phot = {'mag': testcol[self.cols['magcols']].values,
-                    'magerr': testcol[self.cols['errcols']].values,
+            phot = {'mag': np.array(testcol[self.cols['magcols']], dtype=float),
+                    'magerr': np.array(testcol[self.cols['errcols']], dtype=float),
                     'inst_filt': np.array(self.cols['flts']),
                     'index': f'{self.gal}_{int(testcol['index'])}'}
 
             if not self.keep_narrow:
-                    fl_mask = np.array(['N' in i for i in phot['inst_filt']]) | np.array(['300M' in i for i in phot['inst_filt']])
+                    fl_mask = np.array(['N' in i for i in phot['inst_filt']]) #| np.array(['300M' in i for i in phot['inst_filt']])
                     phot['mag'] = phot['mag'][~fl_mask]
                     
                     phot['magerr'] = phot['magerr'][~fl_mask]
@@ -310,7 +330,8 @@ class parallel_sed_fit(object):
             tm = (base_rsgcat['teff_chisq'] > 3300) & (base_rsgcat['teff_chisq'] < 4700)
             tum = base_rsgcat['tau_chisq'].values > 1
             lm = np.log10(base_rsgcat['lum_chisq'].values) > 4.5
-            mask = chi_cut & (tm | tum | lm)
+            cm = base_rsgcat['chimin'] < chi_cut
+            mask = cm & (tm | tum | lm)
         else:
             mask = base_rsgcat['chimin'] < chi_cut
 
@@ -318,17 +339,17 @@ class parallel_sed_fit(object):
         self.logger.info(f'RSG catalog contains {len(rsgcat)} objects after chisq cuts')
         return rsgcat
     
-    def apply_initial_cuts(self, colcuts=True):
+    def apply_initial_cuts(self, colcuts=True, outpath=None, min_det=4):
         if not self.agbcut:
             self.logger.info(f'WARNING: AGB cut set to {self.agbcut}')
-        base_rsgcat = self.base_cuts(self.cat, self.cols['magcols'])
+        base_rsgcat = self.base_cuts(self.cat, self.cols['magcols'], min_det=min_det)
         if colcuts:
             base_rsgcat = self.color_cuts(base_rsgcat, self.cols['magcols'])
 
-        modeldf = self.create_modeldf()
+        modeldf = self.create_modeldf(outpath=outpath)
         rsgcat = self.chimin_cuts(base_rsgcat, modeldf)
-        rsgcat.to_csv(os.path.join(self.photfile_path, f'{self.gal}_{self.comp}_rsgcat_test.csv'))
-        return rsgcat
+        rsgcat.to_csv(os.path.join(self.procdir, f'{self.gal}_{self.comp}_rsgcat.csv'))
+        # return rsgcat
 
     def gen_phot(self, col, noise_floor=0.01):
         phot = {'mag': col[self.cols['magcols']].values,
@@ -337,7 +358,7 @@ class parallel_sed_fit(object):
                 'index': f'ngc5643_{int(col['index'])}'}
 
         if not self.keep_narrow:
-                fl_mask = np.array(['N' in i for i in phot['inst_filt']]) | np.array(['300M' in i for i in phot['inst_filt']])
+                fl_mask = np.array(['N' in i for i in phot['inst_filt']]) #| np.array(['300M' in i for i in phot['inst_filt']])
                 phot['mag'] = phot['mag'][~fl_mask]
                 
                 phot['magerr'] = phot['magerr'][~fl_mask]
@@ -402,7 +423,7 @@ class parallel_sed_fit(object):
         for idx_ in self.rsgcat.index:
             self.read_mc_params(self.rsgcat.loc[idx_])
 
-        self.rsgcat.to_csv(os.path.join(self.photfile_path, f'rsgcat_{self.gal}_mcmc.csv'), index=False)
+        self.rsgcat.to_csv(os.path.join(self.procdir, f'rsgcat_{self.gal}_mcmc.csv'), index=False)
 
     
 if __name__=='__main__':
@@ -410,6 +431,7 @@ if __name__=='__main__':
     args = parser.parse_args()
 
     sedfit = parallel_sed_fit(gal=args.gal, 
+                              procdir=args.procdir,
                               photfile_path=args.photfile_path, 
                               dm=args.dm, 
                               dmerr=args.dmerr, 

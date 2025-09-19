@@ -6,6 +6,10 @@ import glob, os
 import itertools
 from astropy import wcs
 from astropy.io import fits
+from dustmaps.sfd import SFDQuery
+from dust_extinction.parameter_averages import CCM89, G23
+from astropy.coordinates import SkyCoord
+import astropy.units as u
 
 def get_filters(columns):
     """
@@ -110,6 +114,45 @@ def map_columns(columns):
     
     return col_dict, filters, filt_dict
 
+def mw_extinction(df, filters, verbose=False):
+    """
+    apply milky way extinction correction to photometry
+    
+    Parameters
+    ----------
+    df : pandas.DataFrame
+        dataframe containing photometry (must contain RA, Dec columns)
+    filters : list
+        list of unique filters
+    verbose : bool
+        print median A_lambda for each filter   
+
+    Returns
+    -------
+    df : pandas.DataFrame
+        dataframe with Milky Way extinction corrected magnitudes
+    """
+    ra, dec = df['RA'], df['Dec']
+    coord = SkyCoord(ra=ra, dec=dec, unit = (u.hourangle, u.deg), frame='icrs')
+
+    #query SFD dust map for E(B-V)
+    sfd = SFDQuery()
+    ebv = sfd(coord)
+    R_V = 3.1
+
+    #use extinction law from Gordon+23
+    ext = G23(Rv = R_V)
+    for flt_ in filters:
+        wv = float(flt_[1:4])/100*u.um
+        a_lambda = ext(wv)
+        A_lambda = a_lambda * ebv * R_V
+        if verbose:
+            print(f'Median A_lambda in {flt_} is {np.median(A_lambda)}')
+        mask_missing = (df[flt_ + '_mag'] > 90.0) | (df[flt_ + '_mag'].isna().values)
+        df.loc[~mask_missing, flt_+'_mag'] = df.loc[~mask_missing, flt_+'_mag'] + A_lambda[~mask_missing]
+
+    return df
+
 def save_photfiles(photfile_path, outdir, chunksize=100000, lc=False):
     """
     save photometry files with cuts applied to smaller csv files
@@ -134,8 +177,8 @@ def save_photfiles(photfile_path, outdir, chunksize=100000, lc=False):
     if not os.path.exists(outdir):
         os.makedirs(outdir)
   
-    photfiles = sorted(glob.glob(os.path.join(photfile_path, '*phot')))
-    refimgs = sorted(glob.glob(os.path.join(photfile_path, '*i2d.fits')))
+    photfiles = sorted(glob.glob(os.path.join(photfile_path, '*', '*phot')))
+    refimgs = sorted(glob.glob(os.path.join(photfile_path, '*', '*i2d.fits')))
     for i, (photfile, refimg) in enumerate(zip(photfiles, refimgs)):
         column_file = photfile + '.columns'
         #map columns to indices
@@ -153,19 +196,21 @@ def save_photfiles(photfile_path, outdir, chunksize=100000, lc=False):
                     ((_df[col_idx['Sharpness']])**2 <= 0.04) & \
                     (_df[col_idx['Crowding']] <= 1.5) & \
                     (_df[col_idx['Type']] <= 2)
-            _df = _df[cuts]
+            _df = _df[cuts].copy()
 
             _ra, _dec = refwcs.all_pix2world(_df[col_idx['X']], _df[col_idx['Y']], 0)
-            _df['RA'] = _ra
-            _df['Dec'] = _dec
-            _df['gid'] = gid
-            _df['id'] = np.array(_df.index)
+            _df.loc[:, 'RA'] = _ra
+            _df.loc[:, 'Dec'] = _dec
+            _df.loc[:, 'gid'] = gid
+            _df.loc[:, 'id'] = np.array(_df.index)
 
             if lc:
                 pass
+                #BUG: add mw extinction correction to lc mode
             else:
-                _df = _df[list(col_idx.values())]
-                _df.columns = list(col_idx.keys())
+                _df = _df[list(col_idx.values()) + ['RA', 'Dec', 'gid', 'id']]
+                _df.columns = list(col_idx.keys()) + ['RA', 'Dec', 'gid', 'id']
+                _df = mw_extinction(_df, filters, verbose=False)
 
             _df.to_csv(f"{outdir}/{os.path.basename(photfile).split('.')[0]}_{j}.csv", 
                        mode = 'a', header = True, index = False)
