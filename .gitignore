@@ -19,3 +19,4 @@ data/rsg*
 *.h5
 frbcat.ipynb
 plots.ipynb
+spec.ipynb

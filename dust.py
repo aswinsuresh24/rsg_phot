@@ -13,6 +13,23 @@ from astropy.io import ascii
 from scipy import interpolate
 from scipy.integrate import simpson
 import subprocess
+import argparse
+
+def create_parser():
+    '''
+    Create an argument parser
+
+    Returns
+    -------
+    parser : argparse.ArgumentParser
+        Argument parser
+    '''
+    parser = argparse.ArgumentParser(description='Create DUSTY grids')
+    parser.add_argument('--logz', type=float, default=0.00, help='log metallicity (0.0, -0.25 and -0.5 for MARCS; 0.0 and -0.5 for NewEra)')
+    parser.add_argument('--comp', type=str, default='sil', help='Dust composition (sil or grf)')
+    parser.add_argument('--outdir', type=str, default='data/dusty_sil_grid', help='Output directory for spectra')
+    parser.add_argument('--outdir', type=str, default='data/marcs/m1.00_g0.00', help='Model directory for DUSTY input spectra')
+    return parser
  
 class dustgen(object):
     def __init__(self, dist=10*u.Mpc, interp_method='cubic'):
@@ -194,12 +211,12 @@ class dusty_gen(object):
     def __init__(self, 
                  dist=10*u.Mpc, 
                  logz=0.00,
+                 logg=0.00,
                  interp_method='cubic', 
                  rewrite_lambda_grid=False,
-                 modeldir='/Users/aswin/rsg_phot/data/marcs/',
+                 modeldir='/Users/aswin/rsg_phot/data/marcs/m1.00_g0.00',
                  outdir='/Users/aswin/rsg_phot/data/dusty_grid'):
 
-        self.dustdir = 'data/dust/'
         self.dist = dist
 
         # This is the total integrated flux of a source with Lum = 1 Lsun in units of
@@ -211,13 +228,24 @@ class dusty_gen(object):
         self.DUST_TO_GAS = 0.01
 
         # Read MARCS models
-        self.rsg_modeldir = os.path.join(modeldir, 'g0.00')
+        self.rsg_modeldir = modeldir
         self.rsg_logz = logz
         sgn = '+' if self.rsg_logz > -1e-5 else '-'
-        marcs_spec = np.loadtxt(os.path.join(self.rsg_modeldir, 'Z{sgn}{met:.2f}'.format(sgn=sgn, met=np.abs(self.rsg_logz)), 
-                                             'MARCS_models_g0.00_Z{sgn}{met:.2f}.dat'.format(sgn=sgn, met=np.abs(self.rsg_logz))), dtype=float)
-        self.rsg_temp = marcs_spec[0] * u.K
-        self.rsg_data = marcs_spec[1:]
+        if 'marcs' in self.rsg_modeldir:
+            self.modeltype='MARCS'
+        elif 'newera' in self.rsg_modeldir:
+            self.modeltype='NewEra'
+        else:
+            raise ValueError('Model directory must have either MARCS or NewEra models')
+        
+        model_spec = np.loadtxt(os.path.join(self.rsg_modeldir, 
+                                             '{modeltype}_models_g{logg:.2f}_Z{sgn}{met:.2f}.dat'.format(modeltype=self.modeltype, 
+                                                                                                         sgn=sgn, 
+                                                                                                         logg=logg, 
+                                                                                                         met=np.abs(self.rsg_logz))),
+                                             dtype=float)
+        self.rsg_temp = model_spec[0] * u.K
+        self.rsg_data = model_spec[1:]
         self.rsg_minflux = np.min(self.rsg_data)
         self.rsg_wavelength = np.logspace(np.log10(1300.), np.log10(200000.), num=5036) * u.Angstrom
         self.rsg_interp = interpolate.RegularGridInterpolator((self.rsg_wavelength.value, self.rsg_temp.value), self.rsg_data, method=interp_method, bounds_error=False)
@@ -230,6 +258,7 @@ class dusty_gen(object):
                                  list(np.logspace(np.log10(4.5), np.log10(15), num = 200)) +\
                                  list(np.logspace(np.log10(15), np.log10(3.6e4), num = 200))
         self.dusty_lambda_grid = np.array(self.dusty_lambda_grid)
+        self.dusty_n_taugrid = 27
         self.validate_dusty_dir(rewrite_lambda_grid)
         self.dust_comp = 'sil'
         self.shell_thickness = 2
@@ -277,6 +306,23 @@ class dusty_gen(object):
             # recompile dusty
             subprocess.run(['gfortran', 'dustyV2.f', '-std=legacy', '-o', 'dusty'])
 
+        default_tau = np.array(list(np.arange(0.0, 1.1, 0.1)) + list(np.arange(1.5, 6.0, 0.5)) + list(np.arange(6.0, 13.0, 1.0)))
+        taufile = os.path.join(self.dusty_basedir, 'taugrid.dat')
+        exist_tau = np.loadtxt(taufile, skiprows=1, dtype=float)
+        if len(exist_tau) != len(default_tau):
+            replace_tau = True
+        elif (np.abs(exist_tau - default_tau) > 1e-4).any():
+            replace_tau = True
+        else:
+            replace_tau = False
+
+        if replace_tau:
+            with open(taufile, 'w') as f:
+                f.write('lambda0 = 0.55 micron\n')
+                for t in default_tau:
+                    f.write(f'   {t}\n')
+            self.dusty_n_taugrid = len(default_tau)
+
         # make sure all required files are present in the dusty directory
         req_files = ['dusty', 'dustyV2.f', 'userpar.inc', 'lambda_grid.dat', 'dusty.inp']
         for fl_ in req_files:
@@ -284,7 +330,7 @@ class dusty_gen(object):
                 raise ValueError(f"{fl_} not found in {self.dusty_basedir}")
 
     def setup_input_spec(self, temp, outdir, redo=False):
-        specfilename = os.path.join(outdir, f'marcs_{temp.value}.dat')
+        specfilename = os.path.join(outdir, f'{self.modeltype.lower()}_{temp.value}.dat')
         if redo or not os.path.exists(specfilename):
             if not os.path.exists(outdir):
                 os.makedirs(outdir)
@@ -296,7 +342,7 @@ class dusty_gen(object):
 
             # write marcs model as input spectrum for dusty
             with open(specfilename, 'w') as f:
-                f.write(f'MARCS model atmosphere for T={temp.value} K\n')
+                f.write(f'{self.modeltype} model atmosphere for T={temp.value} K\n')
                 f.write(f'  lambda    L_lambda\n')
                 f.write(f' (micron)  (arbitrary)\n')
             with open(specfilename, 'ab') as f:
@@ -339,10 +385,8 @@ class dusty_gen(object):
             f.write(f'        - shell\'s relative thickness = {p['shell_thickness']}\n')
             f.write('        - power = 2\n\n')
             f.write('     4) Optical Depth\n')
-            f.write('        - grid type = 1\n')
-            f.write('        - lambda0 = 0.55 micron\n')
-            f.write(f'        - tau(min) = {p['tau'][0]}; tau(max) = {p['tau'][1]}\n')
-            f.write(f'        - number of models = {p['tau'][2]}\n\n')
+            f.write('        - grid type = 3\n')
+            f.write('            taugrid.dat\n')
             f.write('  ----------------------------------------------------------------------\n\n')
             f.write('  II NUMERICS\n\n')
             f.write('     - accuracy for flux conservation = 0.05\n\n')
@@ -365,12 +409,12 @@ class dusty_gen(object):
         # Renormalize the RSG spectrum so it's in units of erg/s/cm2/angstrom for
         # synphot to interpret
         normalize = simpson(flux, x=wv.to(u.um).value)
-        flux = scale.value * self.FLUX_SCALE * flux/normalize / u.micron
+        flux = scale.value * self.FLUX_SCALE * flux/normalize / u.um
         flux = flux.to(u.erg/u.s/u.cm**2/u.Angstrom)
 
         return flux
 
-    def run_dusty(self, tau, temp, dust_temp,
+    def run_dusty(self, temp, dust_temp,
                   dust_comp='sil', 
                   shell_thickness=2, 
                   filedir=None, 
@@ -383,27 +427,18 @@ class dusty_gen(object):
         if filedir is None:
             filedir = self.dusty_datadir
 
-        # format tau input as [tau_min, tau_max, n_grid]
-        if not isinstance(tau, list):
-            tau_V = [tau, tau, 1]
-        else:
-            if len(tau) < 3:
-                raise ValueError('Input tau list should be of the format [tau_min, tau_max, n_grid]')
-            tau_V = tau
-
         # create input spectrum
-        input_spec = self.setup_input_spec(temp=temp, outdir=os.path.join(filedir, 'marcs_spec'), redo=redo_input)
+        input_spec = self.setup_input_spec(temp=temp, outdir=os.path.join(filedir, 'model_spec'), redo=redo_input)
         # parameter list
         p = {'input_spec': input_spec, 
              'temp' : temp, 
              'dust_temp': dust_temp, 
              'dust_comp': dust_comp, 
-             'shell_thickness' : shell_thickness,
-             'tau' : tau_V}
+             'shell_thickness' : shell_thickness}
         
         # directory structure
         # - root (filedir)
-        #   - marcs_spec
+        #   - model_spec
         #       - spectra
         #   - dusty_out
         #       - basename: rsg_temp_dusttemp (outdir)
@@ -432,7 +467,7 @@ class dusty_gen(object):
             os.chdir(curdir)
 
         # read outfile and spectra files
-        outfile_rows = np.loadtxt(outfile, skiprows=41, max_rows=tau_V[2])
+        outfile_rows = np.loadtxt(outfile, skiprows=42, max_rows=self.dusty_n_taugrid)
         idx, taus = outfile_rows[:, 0], outfile_rows[:, 1]
         spec_files = [f"{os.path.join(outdir, basename)}.s{int(i):03}" for i in idx]
         taus = outfile_rows[:, 1]
@@ -454,8 +489,8 @@ class dusty_gen(object):
 
         return dusty_tb, dusty_tb_file
     
-    def dust_spec(self, tau, lum, temp, dust_temp, **kwargs):
-        dusty_tb, dusty_tb_file = self.run_dusty(tau, temp, dust_temp, **kwargs)
+    def dust_spec(self, lum, temp, dust_temp, **kwargs):
+        dusty_tb, dusty_tb_file = self.run_dusty(temp, dust_temp, **kwargs)
         scale = 10**lum * u.Lsun
         wv = dusty_tb['lambda']
 
@@ -466,3 +501,44 @@ class dusty_gen(object):
         dusty_tb.write(dusty_tb_file, path='data', serialize_meta=True, overwrite=True)
 
         return dusty_tb
+    
+    def gen_grid(self, grid_temps=None, grid_dust_temps=None, grid_taus='default', **kwargs):
+        print(f'Creating a {self.dust_comp} DUSTY grid at log(Z)={self.rsg_logz} using {self.modeltype} input spectra')
+        if grid_temps is None:
+            if self.modeltype=='MARCS':
+                grid_temps = np.array(list(np.arange(2500., 4100., 100.)) + list(np.arange(4250., 5250., 250.)))
+            if self.modeltype=='NewEra':
+                grid_temps = np.arange(2500, 5100, 100)
+                
+        if grid_dust_temps is None:
+            grid_dust_temps = np.array([200.0, 500.0, 800.0, 1000.0, 1200.0, 1500.0, 1800.0])
+        
+        if grid_taus != 'default':
+            if not (isinstance(grid_taus, list) or isinstance(grid_taus, np.ndarray)):
+                raise ValueError('grid_taus has to be a list or numpy array, if not "default"')
+            taufile = os.path.join(self.dusty_basedir, 'taugrid.dat')
+            with open(taufile, 'w') as f:
+                f.write('lambda0 = 0.55 micron\n')
+                for t in grid_taus:
+                    f.write(f'   {t}\n')
+            self.dusty_n_taugrid = len(grid_taus)
+
+        for rsg_temp in grid_temps:
+            for dust_temp in grid_dust_temps:
+                print(f'Generating grid for {rsg_temp}, {dust_temp}')
+                tb = self.dust_spec(4.0, rsg_temp*u.K, dust_temp*u.K, dust_comp=self.dust_comp, 
+                                    shell_thickness=self.shell_thickness, **kwargs)
+
+
+if __name__ == '__main__':
+    parser = create_parser()
+    args = parser.parse_args()
+    logz = args.logz
+    comp = args.comp
+    outdir = args.outdir
+    modeldir = args.modeldir
+
+    dustgen = dusty_gen(dist = 10*u.Mpc, logz=logz, outdir=outdir, modeldir=modeldir)
+    dustgen.dust_comp = comp
+
+    dustgen.gen_grid(redo_dusty=False, redo_input=False, tb_overwrite=True)
