@@ -28,7 +28,7 @@ def create_parser():
     parser.add_argument('--logz', type=float, default=0.00, help='log metallicity (0.0, -0.25 and -0.5 for MARCS; 0.0 and -0.5 for NewEra)')
     parser.add_argument('--comp', type=str, default='sil', help='Dust composition (sil or grf)')
     parser.add_argument('--outdir', type=str, default='data/dusty_sil_grid', help='Output directory for spectra')
-    parser.add_argument('--outdir', type=str, default='data/marcs/m1.00_g0.00', help='Model directory for DUSTY input spectra')
+    parser.add_argument('--modeldir', type=str, default='data/marcs/m1.00_g0.00', help='Model directory for DUSTY input spectra')
     return parser
  
 class dustgen(object):
