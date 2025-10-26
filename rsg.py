@@ -255,16 +255,16 @@ class rsg_phot(object):
 
         return(mags)
     
-    def create_rsg_grid(self, subdir, modelname, outdir='data/interpolate', ntau=27, norm=False, lums=None, av=None, rv=None):
+    def create_rsg_grid(self, subdir, modelname, outdir='data/interpolate', ntau=27, norm=False, loglums=None, av=None, rv=None):
 
         all_grids = sorted(glob.glob(subdir + '/rsg*'))
-        grid_temps = np.unique([float(i.split('_')[1]) for i in all_grids])
-        grid_dust_temps = np.unique([float(i.split('_')[2]) for i in all_grids])
+        grid_temps = np.unique([float(os.path.basename(i).split('_')[1]) for i in all_grids])
+        grid_dust_temps = np.unique([float(os.path.basename(i).split('_')[2]) for i in all_grids])
         outfile_ = os.path.join(subdir, f'rsg_{grid_temps[0]}_{grid_dust_temps[0]}', f'rsg_{grid_temps[0]}_{grid_dust_temps[0]}.out')
         grid_taus = np.loadtxt(outfile_, skiprows=42, max_rows = ntau)[:, 1]
 
-        if lums in None:
-            lums = np.array([1e3, 1e6])
+        if loglums is None:
+            loglums = np.array([3, 6])
         if rv is None:
             rv = np.array([1.0, 2.0, 3.0, 4.0, 5.0, 6.0])
         if av is None:
@@ -272,7 +272,7 @@ class rsg_phot(object):
 
         mags = {}
         for flt in self.nrc_filts:
-            mags[flt] = np.zeros((len(grid_temps), len(grid_dust_temps), len(grid_taus), len(lums), len(rv), len(av)))
+            mags[flt] = np.zeros((len(grid_temps), len(grid_dust_temps), len(grid_taus), len(loglums), len(rv), len(av)))
 
         for i, te in enumerate(grid_temps):
             for j, td in enumerate(grid_dust_temps):
@@ -283,6 +283,7 @@ class rsg_phot(object):
                 _, mask = np.unique(wv, return_index=True)
                 wv = wv[mask]
                 energy = (const.h*const.c/wv).to(u.erg)
+                print(specfile)
 
                 for k, col in enumerate(spectable.columns[1:]):
                     if norm:
@@ -309,13 +310,13 @@ class rsg_phot(object):
                                 obs = synphot.Observation(sp, bp, **kwargs)
                                 mag = obs.effstim(self.magsystem)
                                 
-                                for l, lum in enumerate(lums):
-                                    logl = np.log10(lum/1e4)
+                                for l, logl in enumerate(loglums):
+                                    logl = logl - 4
                                     scale_mag = mag.value-2.5*logl                                    
                                     mags[flt][i, j, k ,l, m, n] = scale_mag
 
         models = {}
-        params = (grid_temps, grid_dust_temps, grid_taus, lums, rv, av)
+        params = (grid_temps, grid_dust_temps, grid_taus, loglums, rv, av)
 
         for flt in self.nrc_filts:
             models[flt] = interpolate.RegularGridInterpolator(params, mags[flt], method='linear', bounds_error=True)
