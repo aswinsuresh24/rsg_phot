@@ -23,33 +23,42 @@ d=const.R_sun.to('cm') * 1.0 * u.km/u.s / (const.M_sun.to('g') / (1.0 * u.year) 
 DUST_BB_WIND = d.to(u.Unit(1)).value
 
 class mcmc(object):
-    def __init__(self, model_type='rsg', comp='sil', z=0.00, shell=2, dm=30.0, dmerr=0.5):
+    def __init__(self, model_type='MARCS', ext=None, comp='sil', z=0.00, shell=2, dm=30.0, dmerr=0.5):
         self.bounds = {
-            'luminosity': [10**3.0, 10**6.0],
+            'luminosity': [3.0, 6.0],
             'temperature': [2600.0, 5000.0], 
-            'tau_V': [0.00, 12.0],
+            'tau_V': [1e-4, 12.0],
             'dust_temp': [200.0, 1800.0],
             'Av': [0.0, 5.0],
             'Rv': [2.0, 6.0]
         }
 
         self.model_type = model_type
-        self.model_fit_params = {'rsg': ['temperature', 'dust_temp', 'tau_V', 'luminosity', 'Rv', 'Av'],
-                                 'rsg_nolum': ['temperature', 'dust_temp', 'tau_V', 'Rv', 'Av'],
-                                 'rsg_notau': ['temperature', 'dust_temp', 'tau_V', 'luminosity', 'Av']}
-        self.blobs_dtype = {'rsg': None,
-                            'rsg_nolum': None, #[("lum", float)],
-                            'rsg_notau': None}
-        self.log_likelihood_fn = {'rsg': self.log_likelihood,
-                                  'rsg_nolum': self.log_likelihood_lum,
-                                  'rsg_notau': self.log_likelihood_tau}
+        self.ext = ext
+        if self.model_type=='MARCS15':
+            if z!=0.0:
+                raise ValueError('15Msun MARCS model is only avaiable at Z=0.0')
+            self.bounds['temperature'] = [3300.0, 4500.0]
+
+        if self.ext is None:
+            self.model_fit_params = ['temperature', 'dust_temp', 'tau_V', 'luminosity', 'Rv', 'Av']
+            self.blobs_dtype = None
+            self.log_likelihood_fn = self.log_likelihood
+        elif (isinstance(self.ext, tuple) | isinstance(self.ext, list)) & (len(self.ext)==2):
+            self.model_fit_params = ['temperature', 'dust_temp', 'tau_V', 'luminosity']
+            self.blobs_dtype = None
+            self.log_likelihood_fn = self.log_likelihood_tau
+        else:
+            raise ValueError(f'Extinction {self.ext} is not valid - needs to be array-like with Rv and Av')
+
         self.backend = None
         self.dm = dm - 30.0
         self.verbose = False
         self.comp = comp
+        sgn = '+' if z > -1e-5 else '-'
         self.dirs = {
             'bandpass':'data/bandpass',
-            'model_grid':os.path.join('data', 'interpolate', f'{self.model_type.split('_')[0]}_{self.comp}_r{shell}_z{z:.2f}_ext.pkl'),
+            'model_grid':os.path.join('data', 'interpolate', f'{self.model_type}_Z{sgn}{np.abs(z):.2f}_{self.comp}.pkl'),
             'backends':'data/backends'
         }
         with open(self.dirs['model_grid'], 'rb') as f:
@@ -61,7 +70,7 @@ class mcmc(object):
 
     def reset_bounds(self):
         self.bounds = {
-            'luminosity': [10**3.0, 10**6.0],
+            'luminosity': [3.0, 6.0],
             'temperature': [2600.0, 5000.0], 
             'tau_V': [0.01, 12.0],
             'dust_temp': [200.0, 1800.0],
@@ -74,7 +83,7 @@ class mcmc(object):
         de = (10**((dm+dmerr)/5+1.0) - 10**((dm-dmerr)/5+1.0)) * u.pc
         return [d.to(u.Mpc).value, de.to(u.Mpc).value]
 
-    def get_guess(self, model_type='rsg', guess_type='params'):
+    def get_guess(self, guess_type='params'):
         if self.backend:
             try:
                 if self.backend.iteration>0:
@@ -94,11 +103,8 @@ class mcmc(object):
             except (OSError, KeyError):
                 print(traceback.format_exc())
 
-        if model_type == 'rsg':
-            guess = np.array([3200, 800, 0.02, 1.6e4, 3.1, 0.125])
         else:
-            print('ERROR: unrecognized model type. Only "rsg" is currently supported.')
-            sys.exit()
+            guess = np.array([3200, 800, 0.02, 1.6e4, 3.1, 0.125])
 
         return(guess)
     
@@ -123,28 +129,39 @@ class mcmc(object):
 
         return backend
 
-    def get_init_pos(self, ndim, nwalkers):
+    def get_init_pos(self, nwalkers):
+        ndim = len(self.model_fit_params)
         init_pos = np.zeros((nwalkers, ndim))
 
-        for i,par in enumerate(self.model_fit_params[self.model_type]):
+        for i,par in enumerate(self.model_fit_params):
             init_pos[:,i] = np.random.uniform(self.bounds[par][0], self.bounds[par][1], nwalkers)
 
         return init_pos
     
     def check_bounds(self, theta):
-        for i,par in enumerate(self.model_fit_params[self.model_type]):
+        for i,par in enumerate(self.model_fit_params):
             if theta[i] < self.bounds[par][0] or theta[i] > self.bounds[par][1]:
                 return(True)
         return(False)
     
-    def run_emcee(self, phot, nsteps=350, nwalkers=64, burn_in=75, set_limmask=False, return_params=True, calculate_chi=False):
+    def run_emcee(self, phot, ext=None, nsteps=350, nwalkers=64, burn_in=75, set_limmask=False, return_params=True, calculate_chi=False):
         if set_limmask:
             limmask = (phot['mag'] > 90.0) | (phot['magerr'] > 90.0) | (np.isnan(phot['mag'])) | (np.isnan(phot['magerr']))
             phot['mag'] = phot['mag'][~limmask]
             phot['magerr'] = phot['magerr'][~limmask]
             phot['inst_filt'] = phot['inst_filt'][~limmask]
         self.phot = phot
-        ndim = len(self.model_fit_params[self.model_type])
+
+        if ext is not None:
+            self.ext = ext
+            if (isinstance(self.ext, tuple) | isinstance(self.ext, list)) & (len(self.ext)==2):
+                self.model_fit_params = ['temperature', 'dust_temp', 'tau_V', 'luminosity']
+                self.blobs_dtype = None
+                self.log_likelihood_fn = self.log_likelihood_tau
+            else:
+                print(f'WARNING: invalid format for extinction {ext}; Extinction will be fit for in MCMC.')
+
+        ndim = len(self.model_fit_params)
 
         #load backend
         backend = self.load_backend(self.phot)
@@ -169,12 +186,12 @@ class mcmc(object):
             if self.verbose: print('Current number of iterations on backend: ',backend.iteration)
             init_pos = backend.get_last_sample()
         else:
-            init_pos = self.get_init_pos(ndim, nwalkers)
+            init_pos = self.get_init_pos(nwalkers)
 
         # Construct emcee sampler with parameters derived above
-        sampler = emcee.EnsembleSampler(nwalkers, ndim, self.log_likelihood_fn[self.model_type], 
+        sampler = emcee.EnsembleSampler(nwalkers, ndim, self.log_likelihood_fn, 
                                         backend=backend, moves=[(emcee.moves.KDEMove(), 1.0)], 
-                                        blobs_dtype=self.blobs_dtype[self.model_type])
+                                        blobs_dtype=self.blobs_dtype)
 
         # Run MCMC step
         sampler.run_mcmc(init_pos, nsteps, progress=self.verbose)
@@ -184,7 +201,7 @@ class mcmc(object):
             return params
     
     def read_params(self, phot, burn_in=75, thin=1, calculate_chi=False):
-        ndim = len(self.model_fit_params[self.model_type])
+        ndim = len(self.model_fit_params)
         # Read current model probabilities, samples, and blobs from backend
         reader = self.load_backend(phot)
         sample = np.array(reader.get_chain(flat=True))
@@ -197,12 +214,12 @@ class mcmc(object):
             print('Minimum chi^2 is:','%.7f'%(-1.0*np.max(prob)))
             print('\n\n')
 
-        params = dict.fromkeys(self.model_fit_params[self.model_type])
+        params = dict.fromkeys(self.model_fit_params)
         converged_sample = np.array(reader.get_chain(flat=True, discard=burn_in, thin=thin))
         converged_prob = np.array(reader.get_log_prob(flat=True, discard=burn_in, thin=thin))
         converged_blob = np.array(reader.get_blobs(flat=True, discard=burn_in, thin=thin))
 
-        for i,param in enumerate(self.model_fit_params[self.model_type]):
+        for i,param in enumerate(self.model_fit_params):
             p, p_elow, p_eup = self.calculate_param_best_fit(converged_sample[:,i], converged_prob, ndim, param, 
                                                              verbose=self.verbose, return_uncertainty=True)
             params[param] = (p, p_elow, p_eup)
@@ -238,33 +255,11 @@ class mcmc(object):
 
         return(chi2)
     
-    def log_likelihood_lum(self, theta):
-        if self.check_bounds(theta):
-            return(-np.inf)
-        theta = np.insert(theta, 3, 1e3)
-
-        params = np.meshgrid(*theta, indexing='ij', sparse=True)
-        model_mag = np.array([self.model[f](params).flatten()[0] for f in self.phot['inst_filt']])+self.dm
-
-        submag = model_mag - self.phot['mag'] #- model_mag
-        lum_mean = np.mean(submag)
-        submag -= lum_mean
-
-        if any(np.isnan(model_mag)):
-            return(-np.inf)
-        
-        chi2 = -0.5*np.sum(submag**2/self.phot['magerr']**2) / (len(model_mag) - 1)
-        if np.isnan(chi2):
-            print(f'likelihood is nan for {theta}')
-            return(-np.inf)
-
-        return chi2
-    
     def log_likelihood_tau(self, theta):
         if self.check_bounds(theta):
             return(-np.inf)
 
-        params = np.meshgrid(*theta[:-1], 4.0, theta[-1], indexing='ij', sparse=True)
+        params = np.meshgrid(*theta, self.ext[0], self.ext[1], indexing='ij', sparse=True)
         model_mag = np.array([self.model[f](params).flatten()[0] for f in self.phot['inst_filt']])+self.dm
 
         if any(np.isnan(model_mag)):
