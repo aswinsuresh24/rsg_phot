@@ -28,8 +28,8 @@ def create_parser():
     '''
 
     parser = argparse.ArgumentParser(description='Fit red supergiant SEDs')
-    parser.add_argument('--gal', type=str, default='gal', help='Galaxy name')
-    parser.add_argument('--procdir', type=str, default='.', help='Directory to save processed photometry')
+    parser.add_argument('--gal', type=str, default='gal', help='Galaxy name', required=True)
+    parser.add_argument('--procdir', type=str, default='.', help='Directory to save processed photometry', required=True)
     parser.add_argument('--photfile_path', type=str, default='.', help='Root directory to search for dolphot photometry')
     parser.add_argument('--dm', type=float, default=30, help='Distance modulus')
     parser.add_argument('--dmerr', type=float, default=0.5, help='Distance modulus error')
@@ -39,8 +39,8 @@ def create_parser():
     parser.add_argument('--comp', type=str, default='sil', help='Dust composition of RSG model (sil / grf)')
     parser.add_argument('--keep_narrow', type=bool, default=False, help='Fit narrow band photometry?')
     parser.add_argument('--ncores', type=int, default=1, help='Number of CPU cores')
-    parser.add_argument('--ignore_filts', type=list, help='Photometry to avoid fitting')
     parser.add_argument('--rsgcat', type=str, default=None, help='Path to pre-processed rsgcat')
+    parser.add_argument('--ignore_filts', nargs='*', help='Photometry to avoid fitting')
 
     return parser
 
@@ -97,6 +97,7 @@ class parallel_sed_fit(object):
         self.gen_mc_obj.verbose = False
         self.gen_mc_obj.dirs['backends'] = self.backend_dir
         self.keep_narrow = keep_narrow
+        self.ignore_filts = ignore_filts
         self.trgb = trgb
         self.trgb = (int(np.where(self.nrc_filts==self.trgb[0].upper())[0][0]), self.trgb[1])
         self.chimin_params = {
@@ -223,7 +224,7 @@ class parallel_sed_fit(object):
         idx_iterator = list(itertools.combinations(range(0, 29), 2))
         
         self.gen_mc_obj.reset_bounds()
-        self.gen_mc_obj.bounds['luminosity'] = [10**3.5, 10**6.0]
+        self.gen_mc_obj.bounds['luminosity'] = [3.5, 6.0]
         self.gen_mc_obj.bounds['temperature'] = [2600., 5000.]
 
         sample_models = np.zeros((10000, len(self.nrc_filts)))
@@ -247,7 +248,8 @@ class parallel_sed_fit(object):
             color_dict[index] = (cl_min, cl_max)
 
         nwm = np.array(['N' in i for i in self.cols['magcols']])
-        mfls = self.cols['magcols'][~nwm]
+        im = [i.split('_mag')[0].upper() in self.ignore_filts for i in sedfit.cols['magcols']]
+        mfls = self.cols['magcols'][~(nwm|im)]
 
         colorm = np.array([True]*len(cat_mags))
         for i, j in itertools.combinations(mfls, 2):
@@ -289,6 +291,31 @@ class parallel_sed_fit(object):
         magcols = modeldf.columns[magcols]
         modeldf[magcols] = modeldf[magcols] + self.gen_mc_obj.dm
         return modeldf
+
+    def gen_phot(self, col, noise_floor=0.01):
+        phot = {'mag': np.array(col[self.cols['magcols']], dtype=float),
+                'magerr': np.array(col[self.cols['errcols']], dtype=float),
+                'inst_filt': np.array(self.cols['flts']),
+                'index': f'{self.gal}_{int(col['index'])}'}
+
+        if not self.keep_narrow:
+            narrow_mask = np.array(['N' in i for i in phot['inst_filt']])
+            ign_mask = np.array([i.upper() in self.ignore_filts for i in phot['inst_filt']])
+            phot['mag'] = phot['mag'][~(narrow_mask|ign_mask)]
+            phot['magerr'] = phot['magerr'][~(narrow_mask|ign_mask)]
+            phot['inst_filt'] = phot['inst_filt'][~(narrow_mask|ign_mask)]
+        else:
+            ign_mask = np.array([i.upper() in self.ignore_filts for i in phot['inst_filt']])
+            phot['mag'] = phot['mag'][~ign_mask]
+            phot['magerr'] = phot['magerr'][~ign_mask]
+            phot['inst_filt'] = phot['inst_filt'][~ign_mask]
+
+        limmask = (phot['mag'] > 90.0) | (phot['magerr'] > 90.0) | (np.isnan(phot['mag'])) | (np.isnan(phot['magerr'])) | (phot['magerr'] < 1e-4)
+        phot['mag'] = phot['mag'][~limmask]
+        phot['magerr'] = np.sqrt(phot['magerr'][~limmask]**2 + noise_floor**2)
+        phot['inst_filt'] = phot['inst_filt'][~limmask]
+
+        return phot
     
     def chimin(self, phot, modeldf):
         modelmagval = modeldf[phot['inst_filt']].values
@@ -311,23 +338,7 @@ class parallel_sed_fit(object):
         self.logger.info(f'Applying chisq cuts')
         for idx in tqdm(base_rsgcat.index):
             testcol = base_rsgcat.loc[idx]
-
-            phot = {'mag': np.array(testcol[self.cols['magcols']], dtype=float),
-                    'magerr': np.array(testcol[self.cols['errcols']], dtype=float),
-                    'inst_filt': np.array(self.cols['flts']),
-                    'index': f'{self.gal}_{int(testcol['index'])}'}
-
-            if not self.keep_narrow:
-                    fl_mask = np.array(['N' in i for i in phot['inst_filt']])
-                    phot['mag'] = phot['mag'][~fl_mask]
-                    
-                    phot['magerr'] = phot['magerr'][~fl_mask]
-                    phot['inst_filt'] = phot['inst_filt'][~fl_mask]
-
-            limmask = (phot['mag'] > 90.0) | (phot['magerr'] > 90.0) | (np.isnan(phot['mag'])) | (np.isnan(phot['magerr'])) | (phot['magerr'] < 1e-4)
-            phot['mag'] = phot['mag'][~limmask]
-            phot['magerr'] = phot['magerr'][~limmask]
-            phot['inst_filt'] = phot['inst_filt'][~limmask]
+            phot = self.gen_phot(testcol)
 
             c_, m_, l_ = self.chimin(phot, modeldf)
             base_rsgcat.loc[idx, ['chimin', 'lum_chisq']] = c_, l_
@@ -358,26 +369,6 @@ class parallel_sed_fit(object):
         rsgcat = self.chimin_cuts(base_rsgcat, modeldf)
         rsgcat.to_csv(os.path.join(self.procdir, f'{self.gal}_{self.comp}_rsgcat.csv'))
         # return rsgcat
-
-    def gen_phot(self, col, noise_floor=0.01):
-        phot = {'mag': col[self.cols['magcols']].values,
-                'magerr': col[self.cols['errcols']].values,
-                'inst_filt': np.array(self.cols['flts']),
-                'index': f'ngc5643_{int(col['index'])}'}
-
-        if not self.keep_narrow:
-                fl_mask = np.array(['N' in i for i in phot['inst_filt']]) #| np.array(['300M' in i for i in phot['inst_filt']])
-                phot['mag'] = phot['mag'][~fl_mask]
-                
-                phot['magerr'] = phot['magerr'][~fl_mask]
-                phot['inst_filt'] = phot['inst_filt'][~fl_mask]
-
-        limmask = (phot['mag'] > 90.0) | (phot['magerr'] > 90.0) | (np.isnan(phot['mag'])) | (np.isnan(phot['magerr'])) | (phot['magerr'] < 1e-4)
-        phot['mag'] = phot['mag'][~limmask]
-        phot['magerr'] = np.sqrt(phot['magerr'][~limmask]**2 + noise_floor**2)
-        phot['inst_filt'] = phot['inst_filt'][~limmask]
-
-        return phot
     
     def parallel_mc_worker(self, col, nsteps=350, nwalkers=64, burn_in=75):
         try:

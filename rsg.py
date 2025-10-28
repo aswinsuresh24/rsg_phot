@@ -30,7 +30,7 @@ def create_parser():
     parser.add_argument('--outdir', type=str, default='data/interpolate', help='Output directory of picke file')
     parser.add_argument('--modelname', type=str, default='rsg', help='Name of output pickle file')
     parser.add_argument('--ntau', type=int, default=27, help='Number of points in tau grid')
-    parser.add_argument('--norm', type=bool, default=False, help='Normalize spectra')
+    parser.add_argument('--norm', type=bool, default=False, help='Normalize spectra?')
     return parser
 
 class rsg_phot(object):
