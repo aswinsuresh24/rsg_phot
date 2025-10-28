@@ -375,7 +375,7 @@ class parallel_sed_fit(object):
             print(f"[{datetime.now().strftime('%a, %d %b %Y %H:%M:%S')}] Running MCMC on index {int(col['index'])}")
             phot = self.gen_phot(col)
 
-            mc_obj = mcmc(dm=self.dm, dmerr=self.dmerr, z=self.z)
+            mc_obj = mcmc(dm=self.dm, dmerr=self.dmerr, z=self.z, model_type=self.modeltype, comp=self.comp)
             mc_obj.verbose = False
             mc_obj.dirs['backends'] = self.backend_dir
 
@@ -429,6 +429,7 @@ if __name__=='__main__':
     parser = create_parser()
     args = parser.parse_args()
 
+    rsgcat_in = pd.read_csv(args.rsgcat)
     sedfit = parallel_sed_fit(gal=args.gal, 
                               procdir=args.procdir,
                               photfile_path=args.photfile_path, 
@@ -441,5 +442,5 @@ if __name__=='__main__':
                               keep_narrow=args.keep_narrow, 
                               ncores=args.ncores,
                               ignore_filts=args.ignore_filts,
-                              rsgcat=args.rsgcat)
+                              rsgcat=rsgcat_in)
     sedfit.run_sed_fit()

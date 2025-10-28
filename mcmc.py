@@ -226,7 +226,7 @@ class mcmc(object):
 
         if calculate_chi:
             fit_pe = np.array(list(params.values()))
-            min_chi_params = sample[np.argmax(converged_prob)]
+            min_chi_params = converged_sample[np.argmax(converged_prob)]
 
             posterior_params = np.meshgrid(*fit_pe[:, 0], indexing='ij', sparse=True)
             model_mag = np.array([self.model[f](posterior_params).flatten()[0] for f in phot['inst_filt']])+self.dm
