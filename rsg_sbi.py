@@ -34,11 +34,12 @@ def create_parser():
     parser.add_argument('--z', type=float, default=0.0, help='Metallicity')
     parser.add_argument('--comp', type=str, default='sil', help='Dust composition of RSG model (sil / grf)')
     parser.add_argument('--modeltype', type=str, default='MARCS', help='Family of RSG models to fit data to (MARCS / MARCS15 / NewEra)')
+    parser.add_argument('--ntrain', type=float, default=3e5, help='Number of samples in simulated training set')
 
     return parser
 
 class sbifit(object):
-    def __init__(self, procdir, comp='sil', modeltype='MARCS', z=0.0):
+    def __init__(self, procdir, comp='sil', modeltype='MARCS', z=0.0, ntrain=3e5):
 
         self.procdir = procdir
         os.makedirs(self.procdir, exist_ok=True)
@@ -46,6 +47,7 @@ class sbifit(object):
         self.logz = z
         self.comp = comp
         self.modeltype = modeltype
+        self.nsamp = int(ntrain)
 
         self.gen_mc_obj = mcmc(dm=0, dmerr=0, z=self.logz, model_type=self.modeltype, comp=self.comp)
         self.gen_mc_obj.verbose = False
@@ -73,7 +75,10 @@ class sbifit(object):
                        for i in self.nrc_filts]
         self.model_params = ['temperature', 'dust_temp', 'tau_V', 'luminosity', 'Rv', 'Av']
 
-    def sim_training_set(self, nsamp):
+    def sim_training_set(self, nsamp=None):
+        if nsamp is None:
+            nsamp = self.nsamp
+
         sim = np.zeros((nsamp, len(self.model_params) + len(self.nrc_filts)))
         sample_params = self.gen_mc_obj.get_init_pos(nsamp)
 
@@ -86,3 +91,14 @@ class sbifit(object):
         df = pd.DataFrame(sim, columns=cols)
         fname = os.path.join(self.procdir, f"sim_{self.modeltype}_{self.comp}_Z{self.logz}.csv")
         df.to_csv(fname, index=False)
+
+if __name__ == '__main__':
+    parser = create_parser()
+    args = parser.parse_args()
+
+    sbigen = sbifit(procdir=args.procdir, 
+                    comp=args.comp, 
+                    modeltype=args.modeltype, 
+                    z=args.z,
+                    ntrain=args.ntrain) 
+    sbigen.sim_training_set()
