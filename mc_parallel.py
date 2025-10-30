@@ -16,6 +16,7 @@ import argparse
 import logging
 import multiprocessing_logging
 from datetime import datetime
+import matplotlib.pyplot as plt
 
 def create_parser():
     '''
@@ -65,7 +66,7 @@ class parallel_sed_fit(object):
                 except Exception as e:
                     print('Cannot load cat due to the following exception: ', e)
             else:
-                print('WARNING: Not reading in complete photometry')
+                print('WARNING: photfile_path not provided; not reading in complete photometry')
                 self.cat = None
             self.rsgcat = rsgcat
             self.rsgcat.reset_index(inplace=True, drop=True)
@@ -357,6 +358,36 @@ class parallel_sed_fit(object):
         rsgcat = base_rsgcat[mask]
         self.logger.info(f'RSG catalog contains {len(rsgcat)} objects after chisq cuts')
         return rsgcat
+    
+    def plot_error_dist(self, cat=None):
+        if cat is None:
+            cat = self.rsgcat
+
+        errcols = self.cols['errcols']
+        err_df = cat[self.cols['errcols']].replace({9.999: np.nan, 99.999: np.nan})
+
+        data = [err_df[c].dropna().values for c in errcols]
+        labels = [c.replace('_err','') for c in errcols]
+
+        fig, ax = plt.subplots(figsize=(12, 6))
+        bp = ax.boxplot(data, patch_artist=True, tick_labels=labels, showfliers=False)
+
+        # styling
+        for box in bp['boxes']:
+            box.set(facecolor='cornflowerblue', edgecolor='black', alpha=0.5)
+        for whisker in bp['whiskers']:
+            whisker.set(color='black')
+        for median in bp['medians']:
+            median.set(color='royalblue', linewidth=1.5)
+
+        ax.set_yscale('log')
+        ax.set_ylabel('Magnitude error')
+        ax.set_xlabel('Filter')
+        ax.set_title('Error per filter')
+        plt.xticks(rotation=90)
+        plt.grid(alpha=0.3, which='both', linestyle='--')
+        plt.tight_layout()
+        plt.show()
     
     def apply_initial_cuts(self, colcuts=True, outpath=None, min_det=4):
         if not self.agbcut:

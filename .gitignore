@@ -17,6 +17,8 @@ data/rsg*
 *cmd
 *pkl
 *.h5
+*.p
+*.pt
 frbcat.ipynb
 plots.ipynb
 spec.ipynb
