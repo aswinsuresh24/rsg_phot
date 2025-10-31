@@ -42,6 +42,7 @@ def create_parser():
     parser.add_argument('--ncores', type=int, default=1, help='Number of CPU cores')
     parser.add_argument('--rsgcat', type=str, default=None, help='Path to pre-processed rsgcat')
     parser.add_argument('--ignore_filts', nargs='*', help='Photometry to avoid fitting')
+    parser.add_argument('--redo', type=bool, default=False, help='Redo MCMC?')
 
     return parser
 
@@ -49,7 +50,7 @@ def create_parser():
 class parallel_sed_fit(object):
     def __init__(self, gal, procdir, photfile_path=None, dm=30.0, dmerr=0.5, z=0.00, 
                  modeltype='MARCS', trgb=('F090W', 30.0), comp='sil', keep_narrow=False, 
-                 ncores=10, agbcut = True, ignore_filts=None, rsgcat=None):
+                 ncores=10, agbcut = True, ignore_filts=None, rsgcat=None, redo=False):
         
         self.gal = gal
         self.procdir = procdir
@@ -99,6 +100,7 @@ class parallel_sed_fit(object):
         self.gen_mc_obj.dirs['backends'] = self.backend_dir
         self.keep_narrow = keep_narrow
         self.ignore_filts = ignore_filts
+        self.redo_mcmc = redo
         self.trgb = trgb
         self.trgb = (int(np.where(self.nrc_filts==self.trgb[0].upper())[0][0]), self.trgb[1])
         self.chimin_params = {
@@ -438,7 +440,10 @@ class parallel_sed_fit(object):
 
         argument_list = []
         for idx_ in self.rsgcat.index:
-            argument_list.append([self.rsgcat.loc[idx_]])
+            if self.redo_mcmc or not os.path.exists(os.path.join(self.backend_dir, self.gal.upper()+'_'+str(int(idx_))+'_'+self.modeltype+'.h5')): 
+                argument_list.append([self.rsgcat.loc[idx_]])
+            else:
+                continue
 
         # create argument list for starmap async
         multiprocessing_logging.install_mp_handler(self.logger)
@@ -473,5 +478,6 @@ if __name__=='__main__':
                               keep_narrow=args.keep_narrow, 
                               ncores=args.ncores,
                               ignore_filts=args.ignore_filts,
-                              rsgcat=rsgcat_in)
+                              rsgcat=rsgcat_in,
+                              redo=args.redo)
     sedfit.run_sed_fit()

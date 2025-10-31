@@ -507,6 +507,8 @@ class dusty_gen(object):
         if grid_temps is None:
             if self.modeltype=='MARCS':
                 grid_temps = np.array(list(np.arange(2500., 4100., 100.)) + list(np.arange(4250., 5250., 250.)))
+            if self.modeltype=='MARCS15':
+                grid_temps = np.array(list(np.arange(3300., 4100., 100.)) + list(np.array([4250, 4500])))
             if self.modeltype=='NewEra':
                 grid_temps = np.arange(2500, 5100, 100)
                 
