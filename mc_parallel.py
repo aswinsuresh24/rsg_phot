@@ -17,6 +17,7 @@ import logging
 import multiprocessing_logging
 from datetime import datetime
 import matplotlib.pyplot as plt
+import corner
 
 def create_parser():
     '''
@@ -29,9 +30,9 @@ def create_parser():
     '''
 
     parser = argparse.ArgumentParser(description='Fit red supergiant SEDs')
-    parser.add_argument('--gal', type=str, default='gal', help='Galaxy name', required=True)
-    parser.add_argument('--procdir', type=str, default='.', help='Directory to save processed photometry', required=True)
-    parser.add_argument('--photfile_path', type=str, default='.', help='Root directory to search for dolphot photometry')
+    parser.add_argument('-g','--gal', type=str, default='gal', help='Galaxy name', required=True)
+    parser.add_argument('-d', '--procdir', type=str, default='.', help='Directory to save processed photometry', required=True)
+    parser.add_argument('-p', '--photfile_path', type=str, default='.', help='Root directory to search for dolphot photometry')
     parser.add_argument('--dm', type=float, default=30, help='Distance modulus')
     parser.add_argument('--dmerr', type=float, default=0.5, help='Distance modulus error')
     parser.add_argument('--z', type=float, default=0.0, help='Metallicity')
@@ -40,17 +41,17 @@ def create_parser():
     parser.add_argument('--comp', type=str, default='sil', help='Dust composition of RSG model (sil / grf)')
     parser.add_argument('--keep_narrow', type=bool, default=False, help='Fit narrow band photometry?')
     parser.add_argument('--ncores', type=int, default=1, help='Number of CPU cores')
-    parser.add_argument('--rsgcat', type=str, default=None, help='Path to pre-processed rsgcat')
+    parser.add_argument('-r', '--rsgcat', type=str, default=None, help='Path to pre-processed rsgcat')
     parser.add_argument('--ignore_filts', nargs='*', help='Photometry to avoid fitting')
-    parser.add_argument('--redo', type=bool, default=False, help='Redo MCMC?')
+    parser.add_argument('--redo_mcmc', type=bool, default=False, help='Redo MCMC?')
 
     return parser
 
 
-class parallel_sed_fit(object):
+class rsg_dataloader(object):
     def __init__(self, gal, procdir, photfile_path=None, dm=30.0, dmerr=0.5, z=0.00, 
                  modeltype='MARCS', trgb=('F090W', 30.0), comp='sil', keep_narrow=False, 
-                 ncores=10, agbcut = True, ignore_filts=None, rsgcat=None, redo=False):
+                 agbcut=False, ignore_filts=None, rsgcat=None):
         
         self.gal = gal
         self.procdir = procdir
@@ -65,9 +66,9 @@ class parallel_sed_fit(object):
                 try:
                     self.cat = self.read_cat(self.photfile_path)
                 except Exception as e:
-                    print('Cannot load cat due to the following exception: ', e)
+                    self.logger.info('Cannot load complete DOLPHOT catalog due to the following exception: ', e)
             else:
-                print('WARNING: photfile_path not provided; not reading in complete photometry')
+                self.logger.info('WARNING: photfile_path not provided; not reading in complete photometry')
                 self.cat = None
             self.rsgcat = rsgcat
             self.rsgcat.reset_index(inplace=True, drop=True)
@@ -77,7 +78,7 @@ class parallel_sed_fit(object):
             if self.photfile_path is None:
                 raise ValueError('At least one of rsgcat or photfile_path is required as input')
             if not os.path.exists(self.photfile_path):
-                raise ValueError(f'photfile path {self.photfile_path} does not exist')
+                raise ValueError(f'photfile_path {self.photfile_path} does not exist')
             self.cat = self.read_cat(self.photfile_path)
             self.set_cols(self.cat)
             self.rsgcat = None
@@ -86,7 +87,6 @@ class parallel_sed_fit(object):
         self.z = z
         self.modeltype = modeltype
         self.comp = comp
-        self.ncores = ncores
         self.agbcut = agbcut
 
         self.nrc_filts = np.array(['F070W','F090W','F115W','F140M','F150W', 'F150W2', 'F162M',
@@ -100,7 +100,6 @@ class parallel_sed_fit(object):
         self.gen_mc_obj.dirs['backends'] = self.backend_dir
         self.keep_narrow = keep_narrow
         self.ignore_filts = ignore_filts
-        self.redo_mcmc = redo
         self.trgb = trgb
         self.trgb = (int(np.where(self.nrc_filts==self.trgb[0].upper())[0][0]), self.trgb[1])
         self.chimin_params = {
@@ -110,7 +109,6 @@ class parallel_sed_fit(object):
             'Av_' : np.array(list(np.linspace(0, 1, 5))+ list(np.linspace(1.5, 3, 4)))
         }
         self.chimin_modeldir = os.path.join('data', 'chimin_models')
-        self.mcfit_params = np.array(['temperature', 'dust_temp', 'tau_V', 'luminosity', 'Rv', 'Av'])
         
     def read_cat(self, photfile_path):
         catpath = os.path.join(self.procdir, 'proc')
@@ -391,7 +389,7 @@ class parallel_sed_fit(object):
         plt.tight_layout()
         plt.show()
     
-    def apply_initial_cuts(self, colcuts=True, outpath=None, min_det=4):
+    def apply_initial_cuts(self, colcuts=False, outpath=None, min_det=4):
         if not self.agbcut:
             self.logger.info(f'WARNING: AGB cut set to {self.agbcut}')
         base_rsgcat = self.base_cuts(self.cat, min_det=min_det)
@@ -401,52 +399,160 @@ class parallel_sed_fit(object):
         modeldf = self.create_modeldf(outpath=outpath)
         rsgcat = self.chimin_cuts(base_rsgcat, modeldf)
         rsgcat.to_csv(os.path.join(self.procdir, f'{self.gal}_{self.comp}_rsgcat.csv'))
-        # return rsgcat
-    
+        self.rsgcat = rsgcat
+
+class mcmcfit(object):
+    def __init__(self, rsg_dataloader: rsg_dataloader, ncores=1, keep_narrow=False, ignore_filts=None, 
+                 modeltype='MARCS', comp='sil', redo_mcmc=False, verbose=False):
+        if rsg_dataloader.rsgcat is None:
+            raise ValueError('Input RSG dataloader should contain rsgcat; Load the catalog into the dataloader using apply_initial_cuts()')
+        
+        self.rsgloader = rsg_dataloader
+        self.rsgloader.keep_narrow = keep_narrow
+        if ignore_filts is None: ignore_filts=[]
+        self.rsgloader.ignore_filts = ignore_filts
+
+        self.rsgcat = self.rsgloader.rsgcat
+        self.logger = self.rsgloader.logger
+        self.modeltype = modeltype
+        self.comp = comp
+        self.ncores = ncores
+        self.mcfit_params = np.array(['temperature', 'dust_temp', 'tau_V', 'luminosity', 'Rv', 'Av'])
+        self.redo_mcmc = redo_mcmc
+
+        self.mc_obj = mcmc(dm=self.rsgloader.dm, dmerr=self.rsgloader.dmerr, z=self.rsgloader.z, 
+                           model_type=self.modeltype, comp=self.comp)
+        self.mc_obj.verbose=verbose
+        if os.path.exists(self.rsgloader.backend_dir):
+            self.mc_obj.dirs['backends'] = self.rsgloader.backend_dir
+        else:
+            self.mc_obj.dirs['backends'] = 'data/backends'
+
+    def mp_init(self,
+                init_success: int = 0,
+                init_failed: int = 0,
+                init_success_cols: list =[]):
+        global success
+        global failed
+        global success_files
+        success = init_success
+        failed = init_failed
+        success_files = init_success_cols
+
     def parallel_mc_worker(self, col, nsteps=350, nwalkers=64, burn_in=75):
         try:
-            print(f"[{datetime.now().strftime('%a, %d %b %Y %H:%M:%S')}] Running MCMC on index {int(col['index'])}")
-            phot = self.gen_phot(col)
+            self.logger.info(f"[{datetime.now().strftime('%a, %d %b %Y %H:%M:%S')}] Running MCMC on index {int(col['index'])}")
+            phot = self.rsgloader.gen_phot(col)
 
-            mc_obj = mcmc(dm=self.dm, dmerr=self.dmerr, z=self.z, model_type=self.modeltype, comp=self.comp)
-            mc_obj.verbose = False
-            mc_obj.dirs['backends'] = self.backend_dir
-
-            mc_obj.run_emcee(phot, nsteps=nsteps, nwalkers=nwalkers, burn_in=burn_in, 
-                             return_params=False, calculate_chi=False)
+            self.mc_obj.run_emcee(phot, nsteps=nsteps, nwalkers=nwalkers, burn_in=burn_in, 
+                                  return_params=False, calculate_chi=False)
 
         except Exception as e:
             traceback.format_exc()
 
     def read_mc_params(self, col, burn_in=75, thin=1, calculate_chi=True):
-        phot = self.gen_phot(col)
-        fit_params, min_chi_params, chi_posterior, chi_best = self.gen_mc_obj.read_params(phot, burn_in=burn_in, 
-                                                                                          thin=thin, calculate_chi=calculate_chi)
+        phot = self.rsgloader.gen_phot(col)
+        fit_params, min_chi_params, chi_posterior, chi_best = self.mc_obj.read_params(phot, burn_in=burn_in, 
+                                                                                     thin=thin, calculate_chi=calculate_chi)
 
         for i, p_ in enumerate(fit_params.keys()):
             self.rsgcat.loc[int(col['index']), [p_+'_mc', p_+'_elow', p_+'_eup', p_+'_best']] = list(fit_params[p_]) + [min_chi_params[i]]
 
         self.rsgcat.loc[int(col['index']), ['chi_posterior', 'chi_best']] = [chi_posterior, chi_best]
-    
-    def run_sed_fit(self):
-        if self.rsgcat is None:
-            self.rsgcat = self.apply_initial_cuts()
-            self.rsgcat.reset_index(inplace=True, drop=True)
-            self.rsgcat.loc[:, 'index'] = self.rsgcat.index
 
+    def plot_corner(self, phot, min_chi_params):
+        truths = np.array(min_chi_params)
+        reader = self.mc_obj.load_backend(phot)
+        sample = np.array(reader.get_chain(flat=True, discard=75, thin=1))
+
+        medians = np.percentile(sample, 50, axis=0)
+        p16, p84 = np.percentile(sample, 16, axis=0), np.percentile(sample, 84, axis=0)
+
+        labels = self.mcfit_params
+        ndim = len(labels)
+
+        fig = corner.corner(sample, labels=labels, color='C1', hist_kwargs={'density': True},
+                            label_kwargs={'fontsize': 10}, show_titles=False, title_fmt='.3f', 
+                            plot_datapoints=False, fill_contours=True, truth_color='k', truths=truths)
+        
+        axes = np.array(fig.axes).reshape((ndim, ndim))
+        for i in range(ndim):
+            ax_diag = axes[i, i]
+            ax_diag.axvline(medians[i], color='k', lw=1)
+            ax_diag.axvline(p16[i], color='k', lw=1, ls='--')
+            ax_diag.axvline(p84[i], color='k', lw=1, ls='--')
+            ax_diag.set_title(r"${0:.3f}^{{+{1:.3f}}}_{{-{2:.3f}}}$".format(medians[i], p84[i]-medians[i], medians[i]-p16[i]), fontsize=9)
+
+            for j in range(i):
+                ax = axes[i, j]
+                ax.scatter(medians[j], medians[i], marker='x', color='k', s=30)
+
+        fig.suptitle(phot['index'], fontsize=12)
+    
+    def plot_fit(self, phot, fit_params, min_chi_params, chi_post, chi_best, save=False):
+        fit_pe = np.array(list(fit_params.values()))
+        params = np.meshgrid(*fit_pe[:, 0], indexing='ij', sparse=True)
+        model_mag = np.array([self.mc_obj.model[f](params).flatten()[0] for f in phot['inst_filt']]) + self.mc_obj.dm
+        model_mag_plot = np.array([self.mc_obj.model[f](params).flatten()[0] for f in self.rsgloader.nrc_filts]) + self.mc_obj.dm
+
+        mc_params = np.meshgrid(*min_chi_params, indexing='ij', sparse=True)
+        chi_mag = np.array([self.mc_obj.model[f](mc_params).flatten()[0] for f in phot['inst_filt']]) + self.mc_obj.dm
+        chi_mag_plot = np.array([self.mc_obj.model[f](mc_params).flatten()[0] for f in self.rsgloader.nrc_filts]) + self.mc_obj.dm
+
+        fig, (ax1, ax2) = plt.subplots(nrows=2, sharex=True, gridspec_kw={'height_ratios': [3, 1]})
+        plt.subplots_adjust(hspace=0.1)
+        wv = np.array([float(i[1:4])/100 for i in phot['inst_filt']])
+        ax1.errorbar(x=wv, y=phot['mag'], yerr=phot['magerr'], linestyle='none', marker='o', markerfacecolor='cornflowerblue', 
+                    markeredgecolor='black', ecolor='cornflowerblue')
+        ax1.plot(self.rsgloader.wv_all, model_mag_plot, marker = 's', markerfacecolor = 'None', markeredgecolor = 'royalblue', 
+                markersize = 8, ls='--', lw=2, alpha = 0.6, color='cornflowerblue', 
+                label = rf'Posterior $\chi^2={chi_post*(len(phot['inst_filt']) - 1):.2f}$')
+        ax1.plot(self.rsgloader.wv_all, chi_mag_plot, marker = 's', markerfacecolor = 'None', markeredgecolor = 'hotpink', 
+                markersize = 8, ls='--', lw=2, alpha = 0.6, color='hotpink', 
+                label = rf'min $\chi^2={chi_best*(len(phot['inst_filt']) - 1):.2f}$')
+        ax1.grid(alpha=0.3, linestyle='--')
+        ax1.invert_yaxis()
+        ax1.legend()
+        ax1.set_ylabel('AB mag')
+
+        ax2.errorbar(wv, phot['mag'] - model_mag, yerr=phot['magerr'], linestyle='none', marker='o', markerfacecolor='cornflowerblue',
+                    markeredgecolor='black', ecolor='cornflowerblue', label = 'Posterior')
+        ax2.errorbar(wv, phot['mag'] - chi_mag, yerr=phot['magerr'], linestyle='none', marker='o', markerfacecolor='hotpink',
+                    markeredgecolor='black', ecolor='hotpink', label = r'min $\chi^2$')
+        ax2.grid(alpha=0.3, linestyle='--')
+        ax2.set_xlabel(r'$\lambda(\mu m)$')
+        ax2.set_ylabel('Residuals')
+        ax2.axhline(0.0, linestyle='--', alpha=0.5, color='black');
+        if save:
+            plt.savefig(f'plots/MCMC_{phot['index']}.png', bbox_inches='tight', dpi=500)
+    
+    def run_mcmc(self, col, nsteps=350, nwalkers=64, burn_in=75, verbose=True, plot=True):
+        phot = self.rsgloader.gen_phot(col)
+        fit_params, min_chi_params, chi_posterior, chi_best = self.mc_obj.run_emcee(phot, nsteps=nsteps, 
+                                                                                    nwalkers=nwalkers, burn_in=burn_in, 
+                                                                                    return_params=True, calculate_chi=True)
+        
+        if plot:
+            self.plot_fit(phot=phot, fit_params=fit_params, min_chi_params=min_chi_params, 
+                          chi_post=chi_posterior, chi_best=chi_best)
+            self.plot_corner(phot=phot, min_chi_params=min_chi_params)
+        
+        return fit_params, min_chi_params, chi_posterior, chi_best
+
+    def run_mcmc_parallel(self):
         for p_ in self.mcfit_params:
             self.rsgcat.loc[:, [p_+'_mc', p_+'_elow', p_+'_eup', p_+'_best']] = np.nan
         self.rsgcat.loc[:, ['chi_posterior', 'chi_best']] = np.nan
 
         argument_list = []
         for idx_ in self.rsgcat.index:
-            if self.redo_mcmc or not os.path.exists(os.path.join(self.backend_dir, self.gal.upper()+'_'+str(int(idx_))+'_'+self.modeltype+'.h5')): 
+            if self.redo_mcmc or not os.path.exists(os.path.join(self.rsgloader.backend_dir, self.rsgloader.gal.upper()+'_'+str(int(idx_))+'_'+self.rsgloader.modeltype+'.h5')): 
                 argument_list.append([self.rsgcat.loc[idx_]])
             else:
                 continue
 
         # create argument list for starmap async
-        multiprocessing_logging.install_mp_handler(self.logger)
+        multiprocessing_logging.install_mp_handler(self.rsgloader.logger)
         p = Pool(initializer=self.mp_init, processes=self.ncores)
         result = p.starmap_async(self.parallel_mc_worker, argument_list)
 
@@ -458,26 +564,23 @@ class parallel_sed_fit(object):
         for idx_ in self.rsgcat.index:
             self.read_mc_params(self.rsgcat.loc[idx_])
 
-        self.rsgcat.to_csv(os.path.join(self.procdir, f'rsgcat_{self.gal}_mcmc_{self.modeltype}.csv'), index=False)
-
+        self.rsgcat.to_csv(os.path.join(self.rsgloader.procdir, f'rsgcat_{self.rsgloader.gal}_MCMC_{self.rsgloader.modeltype}.csv'), index=False)
     
 if __name__=='__main__':
     parser = create_parser()
     args = parser.parse_args()
 
     rsgcat_in = pd.read_csv(args.rsgcat)
-    sedfit = parallel_sed_fit(gal=args.gal, 
-                              procdir=args.procdir,
-                              photfile_path=args.photfile_path, 
-                              dm=args.dm, 
-                              dmerr=args.dmerr, 
-                              z=args.z, 
-                              modeltype=args.modeltype,
-                              trgb=args.trgb,
-                              comp=args.comp,
-                              keep_narrow=args.keep_narrow, 
-                              ncores=args.ncores,
-                              ignore_filts=args.ignore_filts,
-                              rsgcat=rsgcat_in,
-                              redo=args.redo)
-    sedfit.run_sed_fit()
+
+    load_args = {
+        'gal':args.gal, 'procdir':args.procdir, 'photfile_path':args.photfile_path,
+        'dm':args.dm, 'dmerr':args.dmerr, 'z':args.z, 'trgb':args.trgb,
+        'modeltype':args.modeltype, 'comp':args.comp,
+        'keep_narrow':args.keep_narrow, 'agbcut':False, 'ignore_filts':args.ignore_filts,
+        'rsgcat':rsgcat_in
+    }
+
+    rsgloader = rsg_dataloader(**load_args)
+    sedfit = mcmcfit(rsgloader, ncores=args.ncores, verbose=False, 
+                     modeltype=args.modeltype, comp=args.comp, redo_mcmc=args.redo)
+    sedfit.run_mcmc_parallel()

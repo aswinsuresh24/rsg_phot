@@ -3,13 +3,16 @@ warnings.simplefilter('ignore')
 import numpy as np
 import os, glob
 import sys
+import pickle
 import astropy.units as u
 import astropy.constants as const
+from scipy.stats import gaussian_kde
 import traceback
 import pandas as pd
 import itertools
 from tqdm import tqdm
 from mcmc import mcmc
+from mc_parallel import rsg_dataloader, mcmcfit
 from multiprocessing import Pool
 import argparse
 import logging
@@ -18,6 +21,9 @@ from datetime import datetime
 import torch
 from sbi import utils as sbi_utils
 from sbi import inference
+from sbi.neural_nets import posterior_nn
+from sbi.analysis import plot_summary
+import sbi_pp
 
 def create_parser():
     '''
@@ -39,7 +45,7 @@ def create_parser():
     return parser
 
 class sbifit(object):
-    def __init__(self, procdir, comp='sil', modeltype='MARCS', z=0.0, ntrain=3e5):
+    def __init__(self, procdir, comp='sil', modeltype='MARCS', z=0.0, ntrain=3e5, device='cpu'):
 
         self.procdir = procdir
         os.makedirs(self.procdir, exist_ok=True)
@@ -48,6 +54,7 @@ class sbifit(object):
         self.comp = comp
         self.modeltype = modeltype
         self.ntrain = int(ntrain)
+        self.device = device
 
         self.gen_mc_obj = mcmc(dm=0, dmerr=0, z=self.logz, model_type=self.modeltype, comp=self.comp)
         self.gen_mc_obj.verbose = False
@@ -91,6 +98,63 @@ class sbifit(object):
         df = pd.DataFrame(sim, columns=cols)
         fname = os.path.join(self.procdir, f"sim_{self.modeltype}_{self.comp}_Z{self.logz}.csv")
         df.to_csv(fname, index=False)
+
+    def sim_noise(self, train, rsgcat, sedfit):
+        train_err = np.zeros((len(train), len(sedfit.cols['errcols'])))
+        for i, col in enumerate(sedfit.cols['errcols']):
+            err = rsgcat[col].values
+            mask = np.isnan(err) | (err > 0.5)
+            err = err[~mask]
+            kde = gaussian_kde(err)
+            resamp_errs = kde.resample(len(train))
+            resamp_errs[resamp_errs < 0.01] = 0.01
+            train_err[:, i] = resamp_errs
+
+        return train_err
+
+    def train_sbi(self, training_set_path, rsgcat, sedfit, plot=False):
+        train = pd.read_csv(training_set_path)
+        train['temperature'] = np.log10(train['temperature'])
+        train['dust_temp'] = np.log10(train['dust_temp'])
+
+        mags = train[train.columns[6:]]
+        params = train[train.columns[:6]]
+
+        x_train = np.array(params, dtype=float)
+        y_mags = mags[sedfit.cols['flts']]
+        train_err = self.sim_noise(train, rsgcat, sedfit)
+        y_err = pd.DataFrame(train_err, columns=sedfit.cols['errcols'])
+        y_train = pd.concat([y_mags, y_err], axis=1)
+        y_train = np.array(y_train, dtype=float)
+
+        prior_low   = sbi_pp.prior_from_train('ll', x_train=x_train)
+        prior_high  = sbi_pp.prior_from_train('ul', x_train=x_train)
+        lower_bounds = torch.tensor(prior_low).to(self.device)
+        upper_bounds = torch.tensor(prior_high).to(self.device)
+        prior = sbi_utils.BoxUniform(low=lower_bounds, high=upper_bounds, device=self.device)
+
+        anpe = inference.NPE(prior=prior,
+                            density_estimator=posterior_nn('nsf', hidden_features=50, num_transforms=5, num_bins=20, 
+                                                            z_score_theta='independent', z_score_x='independent'),
+                            device=self.device,)
+        x_tensor = torch.as_tensor(x_train.astype(np.float32)).to(self.device)
+        y_tensor = torch.as_tensor(y_train.astype(np.float32)).to(self.device)
+        anpe.append_simulations(x_tensor, y_tensor)
+        p_x_y_estimator = anpe.train(training_batch_size=256, use_combined_loss=True, validation_fraction=0.1, 
+                                    stop_after_epochs=50, show_train_summary=True)
+        
+        # save trained NPE
+        savepath = os.path.join(self.procdir, 'npe.pt')
+        torch.save(p_x_y_estimator.state_dict(), savepath)
+        pickle.dump(anpe._summary, open('data/sbi/anpe_3.p', 'wb'))
+
+        if plot:
+            try:
+                _ = plot_summary(anpe, tags=["training_loss", "validation_loss"], figsize=(10, 2),)
+            except:
+                print('Failed to plot')
+
+        return savepath
 
 if __name__ == '__main__':
     parser = create_parser()
