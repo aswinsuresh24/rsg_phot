@@ -30,19 +30,19 @@ def create_parser():
     '''
 
     parser = argparse.ArgumentParser(description='Fit red supergiant SEDs using MCMC')
-    parser.add_argument('-g','--gal', type=str, default='gal', help='Galaxy name', required=True)
+    parser.add_argument('-g','--gal', type=str, help='Galaxy name', required=True)
     parser.add_argument('-d', '--procdir', type=str, default='.', help='Directory to save processed photometry', required=True)
-    parser.add_argument('-p', '--photfile_path', type=str, default='.', help='Root directory to search for dolphot photometry')
+    parser.add_argument('-p', '--photfile_path', type=str, default=None, help='Root directory to search for dolphot photometry')
+    parser.add_argument('-r', '--rsgcat', type=str, default=None, help='Path to pre-processed rsgcat')
     parser.add_argument('--dm', type=float, default=30, help='Distance modulus')
     parser.add_argument('--dmerr', type=float, default=0.5, help='Distance modulus error')
     parser.add_argument('--z', type=float, default=0.0, help='Metallicity')
+    parser.add_argument('--trgb', nargs='*', default=('F090W', 30), help='Tip of red giant branch')
     parser.add_argument('--modeltype', type=str, default='MARCS', help='Family of RSG models to fit data to (MARCS / MARCS15 / NewEra)')
-    parser.add_argument('--trgb', type=tuple, default=('F090W', 30), help='Tip of red giant branch')
     parser.add_argument('--comp', type=str, default='sil', help='Dust composition of RSG model (sil / grf)')
     parser.add_argument('--keep_narrow', type=bool, default=False, help='Fit narrow band photometry?')
-    parser.add_argument('--ncores', type=int, default=1, help='Number of CPU cores')
-    parser.add_argument('-r', '--rsgcat', type=str, default=None, help='Path to pre-processed rsgcat')
     parser.add_argument('--ignore_filts', nargs='*', help='Photometry to avoid fitting')
+    parser.add_argument('--ncores', type=int, default=1, help='Number of CPU cores')
     parser.add_argument('--redo_mcmc', type=bool, default=False, help='Redo MCMC?')
 
     return parser
@@ -576,7 +576,7 @@ if __name__=='__main__':
 
     load_args = {
         'gal':args.gal, 'procdir':args.procdir, 'photfile_path':args.photfile_path,
-        'dm':args.dm, 'dmerr':args.dmerr, 'z':args.z, 'trgb':args.trgb,
+        'dm':args.dm, 'dmerr':args.dmerr, 'z':args.z, 'trgb':tuple(args.trgb),
         'modeltype':args.modeltype, 'comp':args.comp,
         'keep_narrow':args.keep_narrow, 'agbcut':False, 'ignore_filts':args.ignore_filts,
         'rsgcat':rsgcat_in

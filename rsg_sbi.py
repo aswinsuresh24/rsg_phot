@@ -36,19 +36,19 @@ def create_parser():
     '''
 
     parser = argparse.ArgumentParser(description='Fit red supergiant SEDs using SBI++')
-    parser.add_argument('-g','--gal', type=str, default='gal', help='Galaxy name', required=True)
+    parser.add_argument('-g','--gal', type=str, help='Galaxy name', required=True)
     parser.add_argument('-d', '--procdir', type=str, default='.', help='Directory to save processed photometry', required=True)
-    parser.add_argument('-p', '--photfile_path', type=str, default='.', help='Root directory to search for dolphot photometry')
+    parser.add_argument('-p', '--photfile_path', type=str, default=None, help='Root directory to search for dolphot photometry')
+    parser.add_argument('-r', '--rsgcat', type=str, default=None, help='Path to pre-processed rsgcat')
     parser.add_argument('--dm', type=float, default=30, help='Distance modulus')
     parser.add_argument('--dmerr', type=float, default=0.5, help='Distance modulus error')
     parser.add_argument('--z', type=float, default=0.0, help='Metallicity')
+    parser.add_argument('--trgb', nargs='*', default=('F090W', 30), help='Tip of red giant branch')
     parser.add_argument('--modeltype', type=str, default='MARCS', help='Family of RSG models to fit data to (MARCS / MARCS15 / NewEra)')
-    parser.add_argument('--trgb', type=tuple, default=('F090W', 30), help='Tip of red giant branch')
     parser.add_argument('--comp', type=str, default='sil', help='Dust composition of RSG model (sil / grf)')
     parser.add_argument('--keep_narrow', type=bool, default=False, help='Fit narrow band photometry?')
-    parser.add_argument('--ncores', type=int, default=1, help='Number of CPU cores')
-    parser.add_argument('-r', '--rsgcat', type=str, default=None, help='Path to pre-processed rsgcat')
     parser.add_argument('--ignore_filts', nargs='*', help='Photometry to avoid fitting')
+    parser.add_argument('--ncores', type=int, default=1, help='Number of CPU cores')
     parser.add_argument('--device', type=str, default='cpu', help='Device for PyTorch (CPU / GPU)')
     parser.add_argument('--sim_train', type=bool, default=False, help='Generate training set samples')
     parser.add_argument('--ntrain', type=float, default=4e5, help='Number of samples in simulated training set')
@@ -78,15 +78,15 @@ class sbifit(object):
             ntrain = int(ntrain)
 
         self.ntrain = ntrain
-        sim = np.zeros((ntrain, len(self.gen_mc_obj.model_fit_params) + len(self.rsgloader.nrc_filts)))
+        sim = np.zeros((self.ntrain, len(self.gen_mc_obj.model_fit_params) + len(self.rsgloader.nrc_filts)))
 
         self.gen_mc_obj.bounds['tau_V'] = [1e-4, 3]
         # sample uniformly for all parameters except tau_V
-        sample_params = self.gen_mc_obj.get_init_pos(ntrain)
+        sample_params = self.gen_mc_obj.get_init_pos(self.ntrain)
         # broken uniform dsitributions for tau_V
-        f_ = int(0.8*ntrain)
+        f_ = int(0.8*self.ntrain)
         tau_4 = np.random.uniform(1e-4, 4, f_)
-        tau_12 = np.random.uniform(4, 12, ntrain-f_)
+        tau_12 = np.random.uniform(4, 12, self.ntrain-f_)
         sample_params[:, 2] = np.hstack((tau_4, tau_12))
 
         for i, p_ in enumerate(sample_params):
@@ -173,7 +173,7 @@ if __name__ == '__main__':
 
     load_args = {
         'gal':args.gal, 'procdir':args.procdir, 'photfile_path':args.photfile_path,
-        'dm':args.dm, 'dmerr':args.dmerr, 'z':args.z, 'trgb':args.trgb,
+        'dm':args.dm, 'dmerr':args.dmerr, 'z':args.z, 'trgb':tuple(args.trgb),
         'modeltype':args.modeltype, 'comp':args.comp,
         'keep_narrow':args.keep_narrow, 'agbcut':False, 'ignore_filts':args.ignore_filts,
         'rsgcat':rsgcat_in
@@ -184,3 +184,4 @@ if __name__ == '__main__':
 
     if args.sim_train:
         sedfit.sim_training_set(ntrain=int(args.ntrain))
+        sys.exit()
