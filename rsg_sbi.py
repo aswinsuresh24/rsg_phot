@@ -36,73 +36,78 @@ def create_parser():
     '''
 
     parser = argparse.ArgumentParser(description='Fit red supergiant SEDs using SBI++')
-    parser.add_argument('--procdir', type=str, default='.', help='Directory to save fit results', required=True)
+    parser.add_argument('-g','--gal', type=str, default='gal', help='Galaxy name', required=True)
+    parser.add_argument('-d', '--procdir', type=str, default='.', help='Directory to save processed photometry', required=True)
+    parser.add_argument('-p', '--photfile_path', type=str, default='.', help='Root directory to search for dolphot photometry')
+    parser.add_argument('--dm', type=float, default=30, help='Distance modulus')
+    parser.add_argument('--dmerr', type=float, default=0.5, help='Distance modulus error')
     parser.add_argument('--z', type=float, default=0.0, help='Metallicity')
-    parser.add_argument('--comp', type=str, default='sil', help='Dust composition of RSG model (sil / grf)')
     parser.add_argument('--modeltype', type=str, default='MARCS', help='Family of RSG models to fit data to (MARCS / MARCS15 / NewEra)')
-    parser.add_argument('--ntrain', type=float, default=3e5, help='Number of samples in simulated training set')
+    parser.add_argument('--trgb', type=tuple, default=('F090W', 30), help='Tip of red giant branch')
+    parser.add_argument('--comp', type=str, default='sil', help='Dust composition of RSG model (sil / grf)')
+    parser.add_argument('--keep_narrow', type=bool, default=False, help='Fit narrow band photometry?')
+    parser.add_argument('--ncores', type=int, default=1, help='Number of CPU cores')
+    parser.add_argument('-r', '--rsgcat', type=str, default=None, help='Path to pre-processed rsgcat')
+    parser.add_argument('--ignore_filts', nargs='*', help='Photometry to avoid fitting')
+    parser.add_argument('--device', type=str, default='cpu', help='Device for PyTorch (CPU / GPU)')
+    parser.add_argument('--sim_train', type=bool, default=False, help='Generate training set samples')
+    parser.add_argument('--ntrain', type=float, default=4e5, help='Number of samples in simulated training set')
 
     return parser
 
 class sbifit(object):
-    def __init__(self, procdir, comp='sil', modeltype='MARCS', z=0.0, ntrain=3e5, device='cpu'):
+    def __init__(self, rsg_dataloader: rsg_dataloader, comp='sil', modeltype='MARCS', device='cpu'):
 
-        self.procdir = procdir
+        self.rsgloader = rsg_dataloader
+        self.procdir = os.path.join(self.rsgloader.procdir, 'sbi')
         os.makedirs(self.procdir, exist_ok=True)
 
-        self.logz = z
+        self.rsgcat = self.rsgloader.rsgcat
+        self.logger = self.rsgloader.logger
+        self.logz = self.rsgloader.z
         self.comp = comp
         self.modeltype = modeltype
-        self.ntrain = int(ntrain)
         self.device = device
 
+        self.training_set_fname = os.path.join('data/sbi', f"sim_{self.modeltype}_{self.comp}_Z{self.logz}.csv")
         self.gen_mc_obj = mcmc(dm=0, dmerr=0, z=self.logz, model_type=self.modeltype, comp=self.comp)
         self.gen_mc_obj.verbose = False
-        self.gen_mc_obj.bounds['tau_V'] = [1e-4, 3]
 
-        self.bounds = {
-            'luminosity': [3.0, 6.0],
-            'temperature': [2600.0, 5000.0], 
-            'tau_V': [1e-4, 12.0],
-            'dust_temp': [200.0, 1800.0],
-            'Av': [0.0, 5.0],
-            'Rv': [2.0, 6.0]
-        }
-
-        if self.modeltype=='MARCS15':
-            if self.logz!=0.0:
-                raise ValueError('15Msun MARCS model is only avaiable at Z=0.0')
-            self.bounds['temperature'] = [3300.0, 4500.0]
-
-        self.nrc_filts = np.array(['F070W','F090W','F115W','F140M','F150W', 'F150W2', 'F162M',
-                                    'F164N','F182M','F187N','F200W','F210M','F212N','F250M',
-                                    'F277W','F300M','F322W2','F323N','F335M','F356W','F360M',
-                                    'F405N','F410M','F430M','F444W','F460M','F466N','F470N','F480M'])
-        self.wv_all = [float(i.replace('F', '').replace('W2', '').replace('M', '').replace('N', '').replace('W', ''))/100 
-                       for i in self.nrc_filts]
-        self.model_params = ['temperature', 'dust_temp', 'tau_V', 'luminosity', 'Rv', 'Av']
-
-    def sim_training_set(self, ntrain=3e5):
+    def sim_training_set(self, ntrain:int = int(4e5)):
+        if not isinstance(ntrain, int):
+            ntrain = int(ntrain)
 
         self.ntrain = ntrain
+        sim = np.zeros((ntrain, len(self.gen_mc_obj.model_fit_params) + len(self.rsgloader.nrc_filts)))
 
-        sim = np.zeros((ntrain, len(self.model_params) + len(self.nrc_filts)))
+        self.gen_mc_obj.bounds['tau_V'] = [1e-4, 3]
+        # sample uniformly for all parameters except tau_V
         sample_params = self.gen_mc_obj.get_init_pos(ntrain)
+        # broken uniform dsitributions for tau_V
+        f_ = int(0.8*ntrain)
+        tau_4 = np.random.uniform(1e-4, 4, f_)
+        tau_12 = np.random.uniform(4, 12, ntrain-f_)
+        sample_params[:, 2] = np.hstack((tau_4, tau_12))
 
         for i, p_ in enumerate(sample_params):
-            model_mag = np.array([self.gen_mc_obj.model[f](p_).flatten()[0] for f in self.nrc_filts]) + self.gen_mc_obj.dm
-            sim[i, :len(self.model_params)] = p_
-            sim[i, len(self.model_params):] = model_mag
+            model_mag = np.array([self.gen_mc_obj.model[f](p_).flatten()[0] for f in self.rsgloader.nrc_filts]) + self.gen_mc_obj.dm
+            sim[i, :len(self.gen_mc_obj.model_fit_params)] = p_
+            sim[i, len(self.gen_mc_obj.model_fit_params):] = model_mag
 
-        cols = self.model_params + list(self.nrc_filts)
+        cols = self.gen_mc_obj.model_fit_params + list(self.rsgloader.nrc_filts)
         df = pd.DataFrame(sim, columns=cols)
-        fname = os.path.join(self.procdir, f"sim_{self.modeltype}_{self.comp}_Z{self.logz}.csv")
-        df.to_csv(fname, index=False)
+        sim_outdir = 'data/sbi'
+        os.makedirs(sim_outdir, exist_ok=True)
+        fname = os.path.join(sim_outdir, f"sim_{self.modeltype}_{self.comp}_Z{self.logz}.csv")
+        self.training_set_fname = fname
 
-    def sim_noise(self, train, rsgcat, sedfit):
-        train_err = np.zeros((len(train), len(sedfit.cols['errcols'])))
-        for i, col in enumerate(sedfit.cols['errcols']):
-            err = rsgcat[col].values
+        df.to_csv(fname, index=False)
+        self.gen_mc_obj.reset_bounds()
+
+    def sim_noise(self, train):
+        train_err = np.zeros((len(train), len(self.rsgloader.cols['errcols'])))
+        for i, col in enumerate(self.rsgloader.cols['errcols']):
+            err = self.rsgloader.rsgcat[col].values
             mask = np.isnan(err) | (err > 0.5)
             err = err[~mask]
             kde = gaussian_kde(err)
@@ -112,18 +117,17 @@ class sbifit(object):
 
         return train_err
 
-    def train_sbi(self, training_set_path, rsgcat, sedfit, plot=False):
-        train = pd.read_csv(training_set_path)
-        train['temperature'] = np.log10(train['temperature'])
-        train['dust_temp'] = np.log10(train['dust_temp'])
+    def train_sbi(self, plot=False):
+        assert self.rsgloader.rsgcat is not None
 
+        train = pd.read_csv(self.training_set_fname)
         mags = train[train.columns[6:]]
         params = train[train.columns[:6]]
 
         x_train = np.array(params, dtype=float)
-        y_mags = mags[sedfit.cols['flts']]
-        train_err = self.sim_noise(train, rsgcat, sedfit)
-        y_err = pd.DataFrame(train_err, columns=sedfit.cols['errcols'])
+        y_mags = mags[self.rsgloader.cols['flts']]
+        train_err = self.sim_noise(train)
+        y_err = pd.DataFrame(train_err, columns=self.rsgloader.cols['errcols'])
         y_train = pd.concat([y_mags, y_err], axis=1)
         y_train = np.array(y_train, dtype=float)
 
@@ -146,7 +150,7 @@ class sbifit(object):
         # save trained NPE
         savepath = os.path.join(self.procdir, 'npe.pt')
         torch.save(p_x_y_estimator.state_dict(), savepath)
-        pickle.dump(anpe._summary, open('data/sbi/anpe_3.p', 'wb'))
+        pickle.dump(anpe._summary, open(os.path.join(self.procdir, 'npe.p'), 'wb'))
 
         if plot:
             try:
@@ -155,14 +159,28 @@ class sbifit(object):
                 print('Failed to plot')
 
         return savepath
+    
+    def infer_sbi(self):
+        raise NotImplementedError()
 
 if __name__ == '__main__':
     parser = create_parser()
     args = parser.parse_args()
 
-    sbigen = sbifit(procdir=args.procdir, 
-                    comp=args.comp, 
-                    modeltype=args.modeltype, 
-                    z=args.z,
-                    ntrain=args.ntrain) 
-    sbigen.sim_training_set()
+    if args.rsgcat is not None:
+        rsgcat_in = pd.read_csv(args.rsgcat)
+    else: rsgcat_in = None
+
+    load_args = {
+        'gal':args.gal, 'procdir':args.procdir, 'photfile_path':args.photfile_path,
+        'dm':args.dm, 'dmerr':args.dmerr, 'z':args.z, 'trgb':args.trgb,
+        'modeltype':args.modeltype, 'comp':args.comp,
+        'keep_narrow':args.keep_narrow, 'agbcut':False, 'ignore_filts':args.ignore_filts,
+        'rsgcat':rsgcat_in
+    }
+
+    rsgloader = rsg_dataloader(**load_args)
+    sedfit = sbifit(rsg_dataloader=rsgloader, comp=args.comp, modeltype=args.modeltype, device=args.device)
+
+    if args.sim_train:
+        sedfit.sim_training_set(ntrain=int(args.ntrain))

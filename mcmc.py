@@ -40,6 +40,9 @@ class mcmc(object):
                 raise ValueError('15Msun MARCS model is only avaiable at Z=0.0')
             self.bounds['temperature'] = [3300.0, 4500.0]
 
+        if (self.model_type=='NewEra') & (z==-0.25):
+            raise ValueError('NewEra grid not available at Z = -0.25 Zsun')
+
         if self.ext is None:
             self.model_fit_params = ['temperature', 'dust_temp', 'tau_V', 'luminosity', 'Rv', 'Av']
             self.blobs_dtype = None

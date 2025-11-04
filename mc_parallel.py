@@ -29,7 +29,7 @@ def create_parser():
         Argument parser
     '''
 
-    parser = argparse.ArgumentParser(description='Fit red supergiant SEDs')
+    parser = argparse.ArgumentParser(description='Fit red supergiant SEDs using MCMC')
     parser.add_argument('-g','--gal', type=str, default='gal', help='Galaxy name', required=True)
     parser.add_argument('-d', '--procdir', type=str, default='.', help='Directory to save processed photometry', required=True)
     parser.add_argument('-p', '--photfile_path', type=str, default='.', help='Root directory to search for dolphot photometry')
@@ -570,7 +570,9 @@ if __name__=='__main__':
     parser = create_parser()
     args = parser.parse_args()
 
-    rsgcat_in = pd.read_csv(args.rsgcat)
+    if args.rsgcat is not None:
+        rsgcat_in = pd.read_csv(args.rsgcat)
+    else: rsgcat_in = None
 
     load_args = {
         'gal':args.gal, 'procdir':args.procdir, 'photfile_path':args.photfile_path,
