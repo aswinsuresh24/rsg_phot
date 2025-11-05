@@ -7,6 +7,8 @@ import pickle
 import astropy.units as u
 import astropy.constants as const
 from scipy.stats import gaussian_kde
+from scipy.optimize import curve_fit
+from scipy import interpolate
 import traceback
 import pandas as pd
 import itertools
@@ -23,6 +25,8 @@ from sbi import utils as sbi_utils
 from sbi import inference
 from sbi.neural_nets import posterior_nn
 from sbi.analysis import plot_summary
+from torch.distributions import MultivariateNormal, Exponential, LogNormal
+from sbi.utils import MultipleIndependent, BoxUniform
 import sbi_pp
 
 def create_parser():
@@ -56,7 +60,7 @@ def create_parser():
     return parser
 
 class sbifit(object):
-    def __init__(self, rsg_dataloader: rsg_dataloader, comp='sil', modeltype='MARCS', device='cpu'):
+    def __init__(self, rsg_dataloader:rsg_dataloader, comp:str='sil', modeltype:str='MARCS', device:str='cpu'):
 
         self.rsgloader = rsg_dataloader
         self.procdir = os.path.join(self.rsgloader.procdir, 'sbi')
@@ -73,7 +77,7 @@ class sbifit(object):
         self.gen_mc_obj = mcmc(dm=0, dmerr=0, z=self.logz, model_type=self.modeltype, comp=self.comp)
         self.gen_mc_obj.verbose = False
 
-    def sim_training_set(self, ntrain:int = int(4e5)):
+    def sim_training_set(self, ntrain:int=int(4e5)) -> None:
         if not isinstance(ntrain, int):
             ntrain = int(ntrain)
 
@@ -104,48 +108,74 @@ class sbifit(object):
         df.to_csv(fname, index=False)
         self.gen_mc_obj.reset_bounds()
 
-    def sim_noise(self, train):
-        train_err = np.zeros((len(train), len(self.rsgloader.cols['errcols'])))
-        for i, col in enumerate(self.rsgloader.cols['errcols']):
-            err = self.rsgloader.rsgcat[col].values
+    def _exp(self, x, a, x0, scale):
+        return a*np.exp((x-x0)*scale)
+
+    def sim_noise(self, train:pd.DataFrame, noise_floor:float=0.01, interp_bins:int=20) -> np.ndarray:
+        erc_ = self.rsgloader.cols['errcols'][self.rsgloader.flt_mask]
+        mc_ = self.rsgloader.cols['magcols'][self.rsgloader.flt_mask]
+        tc_ = self.rsgloader.cols['flts'][self.rsgloader.flt_mask]
+        train_err = np.zeros((len(train), len(erc_)))
+
+        for i, (mcol, ecol, tcol) in enumerate(zip(mc_, erc_, tc_)):
+            mag, err = self.rsgloader.rsgcat[mcol].values - self.rsgloader.dm, self.rsgloader.rsgcat[ecol].values
+            tmag = train[tcol].values
             mask = np.isnan(err) | (err > 0.5)
-            err = err[~mask]
-            kde = gaussian_kde(err)
-            resamp_errs = kde.resample(len(train))
-            resamp_errs[resamp_errs < 0.01] = 0.01
-            train_err[:, i] = resamp_errs
+            mag, err = mag[~mask], err[~mask]
+
+            vmin, vmax = np.percentile(mag, [1, 99])
+            mag_bins = np.linspace(vmin, vmax, interp_bins+1)
+            bin_centers = 0.5 * (mag_bins[1:] + mag_bins[:-1])
+            std_errs = np.array([np.std(err[(mag >= mag_bins[j]) & (mag < mag_bins[j+1])]) for j in range(interp_bins)])
+            sig_interp = interpolate.InterpolatedUnivariateSpline(bin_centers, std_errs, k=3, ext=3)
+
+            popt, _ = curve_fit(self._exp, mag, err)
+            mean_errs = self._exp(tmag, *popt)
+            sig_errs = sig_interp(tmag)
+
+            norm_err = np.random.normal(mean_errs, sig_errs)
+            norm_err = np.sqrt(norm_err**2 + noise_floor**2)
+            train_err[:, i] = norm_err
 
         return train_err
 
-    def train_sbi(self, plot=False):
+    def train_sbi(self, hidden_features=45, ntransforms=5, nbins=10,
+                  batch_size=256, valfrac=0.1, stop_epochs=100, 
+                  noise_floor=0.01, plot=False):
         assert self.rsgloader.rsgcat is not None
 
+        ndim = int(self.gen_mc_obj.model_fit_params)
         train = pd.read_csv(self.training_set_fname)
-        mags = train[train.columns[6:]]
-        params = train[train.columns[:6]]
+        mags = train[train.columns[ndim:]]
+        params = train[train.columns[:ndim]]
 
         x_train = np.array(params, dtype=float)
-        y_mags = mags[self.rsgloader.cols['flts']]
-        train_err = self.sim_noise(train)
-        y_err = pd.DataFrame(train_err, columns=self.rsgloader.cols['errcols'])
+        y_mags = mags[self.rsgloader.cols['flts'][self.rsgloader.flt_mask]]
+        train_err = self.sim_noise(train, noise_floor=noise_floor)
+        y_err = pd.DataFrame(train_err, columns=self.rsgloader.cols['errcols'][self.rsgloader.flt_mask])
         y_train = pd.concat([y_mags, y_err], axis=1)
         y_train = np.array(y_train, dtype=float)
 
-        prior_low   = sbi_pp.prior_from_train('ll', x_train=x_train)
-        prior_high  = sbi_pp.prior_from_train('ul', x_train=x_train)
-        lower_bounds = torch.tensor(prior_low).to(self.device)
-        upper_bounds = torch.tensor(prior_high).to(self.device)
-        prior = sbi_utils.BoxUniform(low=lower_bounds, high=upper_bounds, device=self.device)
+        prior_low = sbi_pp.prior_from_train('ll', x_train=x_train)
+        prior_high = sbi_pp.prior_from_train('ul', x_train=x_train)
+        prior = MultipleIndependent([
+            BoxUniform(low=torch.tensor([prior_low[0]]), high=torch.tensor([prior_high[0]]), device=self.device),
+            BoxUniform(low=torch.tensor([prior_low[1]]), high=torch.tensor([prior_high[1]]), device=self.device),
+            Exponential(torch.tensor([0.5])),
+            BoxUniform(low=torch.tensor([prior_low[3]]), high=torch.tensor([prior_high[3]]), device=self.device),
+            LogNormal(torch.tensor([-0.6]), torch.tensor([0.75])),
+            MultivariateNormal(torch.tensor([3.1]), torch.eye(1,))
+        ])
 
         anpe = inference.NPE(prior=prior,
-                            density_estimator=posterior_nn('nsf', hidden_features=50, num_transforms=5, num_bins=20, 
+                            density_estimator=posterior_nn('nsf', hidden_features=hidden_features, num_transforms=ntransforms, num_bins=nbins, 
                                                             z_score_theta='independent', z_score_x='independent'),
                             device=self.device,)
         x_tensor = torch.as_tensor(x_train.astype(np.float32)).to(self.device)
         y_tensor = torch.as_tensor(y_train.astype(np.float32)).to(self.device)
         anpe.append_simulations(x_tensor, y_tensor)
-        p_x_y_estimator = anpe.train(training_batch_size=256, use_combined_loss=True, validation_fraction=0.1, 
-                                    stop_after_epochs=50, show_train_summary=True)
+        p_x_y_estimator = anpe.train(training_batch_size=batch_size, use_combined_loss=True, validation_fraction=valfrac, 
+                                     stop_after_epochs=stop_epochs, show_train_summary=True)
         
         # save trained NPE
         savepath = os.path.join(self.procdir, 'npe.pt')
@@ -185,3 +215,5 @@ if __name__ == '__main__':
     if args.sim_train:
         sedfit.sim_training_set(ntrain=int(args.ntrain))
         sys.exit()
+
+    sedfit.train_sbi()

@@ -61,6 +61,15 @@ class rsg_dataloader(object):
         os.makedirs(self.backend_dir, exist_ok=True)
         self.logger = self.getlogger()
 
+        self.keep_narrow = keep_narrow
+        if ignore_filts is None: ignore_filts = []
+        self.ignore_filts = ignore_filts
+        self.dm, self.dmerr = dm, dmerr
+        self.z = z
+        self.modeltype = modeltype
+        self.comp = comp
+        self.agbcut = agbcut
+
         if rsgcat is not None:
             if self.photfile_path is not None:
                 try:
@@ -83,12 +92,6 @@ class rsg_dataloader(object):
             self.set_cols(self.cat)
             self.rsgcat = None
 
-        self.dm, self.dmerr = dm, dmerr
-        self.z = z
-        self.modeltype = modeltype
-        self.comp = comp
-        self.agbcut = agbcut
-
         self.nrc_filts = np.array(['F070W','F090W','F115W','F140M','F150W', 'F150W2', 'F162M',
                                     'F164N','F182M','F187N','F200W','F210M','F212N','F250M',
                                     'F277W','F300M','F322W2','F323N','F335M','F356W','F360M',
@@ -98,8 +101,6 @@ class rsg_dataloader(object):
         self.gen_mc_obj = mcmc(dm=self.dm, dmerr=self.dmerr, z=self.z, model_type=self.modeltype, comp=self.comp)
         self.gen_mc_obj.verbose = False
         self.gen_mc_obj.dirs['backends'] = self.backend_dir
-        self.keep_narrow = keep_narrow
-        self.ignore_filts = ignore_filts
         self.trgb = trgb
         self.trgb = (int(np.where(self.nrc_filts==self.trgb[0].upper())[0][0]), self.trgb[1])
         self.chimin_params = {
@@ -142,6 +143,14 @@ class rsg_dataloader(object):
                      'magcols' : np.array(magcols),
                      'errcols' : np.array(errcols),
                      'cat_wv': cat_wv}
+        
+        if not self.keep_narrow:
+            narrow_mask = np.array(['N' in i for i in self.cols['flts']])
+            ign_mask = np.array([i.upper() in self.ignore_filts for i in self.cols['flts']])
+            self.flt_mask = ~(narrow_mask | ign_mask)
+        else:
+            ign_mask = np.array([i.upper() in self.ignore_filts for i in self.cols['flts']])
+            self.flt_mask = ~ign_mask
     
     def getlogger(self, logfile=None):
         for handler in logging.root.handlers[:]:
@@ -294,22 +303,10 @@ class rsg_dataloader(object):
         return modeldf
 
     def gen_phot(self, col, noise_floor=0.01):
-        phot = {'mag': np.array(col[self.cols['magcols']], dtype=float),
-                'magerr': np.array(col[self.cols['errcols']], dtype=float),
-                'inst_filt': np.array(self.cols['flts']),
+        phot = {'mag': np.array(col[self.cols['magcols'][self.flt_mask]], dtype=float),
+                'magerr': np.array(col[self.cols['errcols'][self.flt_mask]], dtype=float),
+                'inst_filt': np.array(self.cols['flts'][self.flt_mask]),
                 'index': f'{self.gal}_{int(col['index'])}'}
-
-        if not self.keep_narrow:
-            narrow_mask = np.array(['N' in i for i in phot['inst_filt']])
-            ign_mask = np.array([i.upper() in self.ignore_filts for i in phot['inst_filt']])
-            phot['mag'] = phot['mag'][~(narrow_mask|ign_mask)]
-            phot['magerr'] = phot['magerr'][~(narrow_mask|ign_mask)]
-            phot['inst_filt'] = phot['inst_filt'][~(narrow_mask|ign_mask)]
-        else:
-            ign_mask = np.array([i.upper() in self.ignore_filts for i in phot['inst_filt']])
-            phot['mag'] = phot['mag'][~ign_mask]
-            phot['magerr'] = phot['magerr'][~ign_mask]
-            phot['inst_filt'] = phot['inst_filt'][~ign_mask]
 
         limmask = (phot['mag'] > 90.0) | (phot['magerr'] > 90.0) | (np.isnan(phot['mag'])) | (np.isnan(phot['magerr'])) | (phot['magerr'] < 1e-4)
         phot['mag'] = phot['mag'][~limmask]
@@ -372,7 +369,6 @@ class rsg_dataloader(object):
         fig, ax = plt.subplots(figsize=(12, 6))
         bp = ax.boxplot(data, patch_artist=True, tick_labels=labels, showfliers=False)
 
-        # styling
         for box in bp['boxes']:
             box.set(facecolor='cornflowerblue', edgecolor='black', alpha=0.5)
         for whisker in bp['whiskers']:
