@@ -28,6 +28,7 @@ from sbi.analysis import plot_summary
 from torch.distributions import MultivariateNormal, Exponential, LogNormal
 from sbi.utils import MultipleIndependent, BoxUniform
 import sbi_pp
+import signal
 
 def create_parser():
     '''
@@ -139,13 +140,15 @@ class sbifit(object):
 
         return train_err
 
-    def train_sbi(self, hidden_features=45, ntransforms=5, nbins=10,
-                  batch_size=256, valfrac=0.1, stop_epochs=100, 
-                  noise_floor=0.01, plot=False):
+    def baseline_sbi_model(self, prior_type='uniform', hidden_features=45, ntransforms=5, 
+                           nbins=10, batch_size=256, valfrac=0.1, stop_epochs=50, 
+                           noise_floor=0.01, plot=False):
         assert self.rsgloader.rsgcat is not None
 
-        ndim = int(self.gen_mc_obj.model_fit_params)
+        ndim = int(len(self.gen_mc_obj.model_fit_params))
         train = pd.read_csv(self.training_set_fname)
+        # train['temperature'] = np.log10(train['temperature'])
+        # train['dust_temp'] = np.log10(train['dust_temp'])
         mags = train[train.columns[ndim:]]
         params = train[train.columns[:ndim]]
 
@@ -158,14 +161,22 @@ class sbifit(object):
 
         prior_low = sbi_pp.prior_from_train('ll', x_train=x_train)
         prior_high = sbi_pp.prior_from_train('ul', x_train=x_train)
-        prior = MultipleIndependent([
-            BoxUniform(low=torch.tensor([prior_low[0]]), high=torch.tensor([prior_high[0]]), device=self.device),
-            BoxUniform(low=torch.tensor([prior_low[1]]), high=torch.tensor([prior_high[1]]), device=self.device),
-            Exponential(torch.tensor([0.5])),
-            BoxUniform(low=torch.tensor([prior_low[3]]), high=torch.tensor([prior_high[3]]), device=self.device),
-            LogNormal(torch.tensor([-0.6]), torch.tensor([0.75])),
-            MultivariateNormal(torch.tensor([3.1]), torch.eye(1,))
-        ])
+
+        if prior_type.lower() == 'uniform':
+            lower_bounds = torch.tensor(prior_low).to(self.device)
+            upper_bounds = torch.tensor(prior_high).to(self.device)
+            prior = sbi_utils.BoxUniform(low=lower_bounds, high=upper_bounds, device=self.device)
+        elif prior_type.lower() == 'independent':
+            prior = MultipleIndependent([
+                BoxUniform(low=torch.tensor([prior_low[0]]), high=torch.tensor([prior_high[0]]), device=self.device),
+                BoxUniform(low=torch.tensor([prior_low[1]]), high=torch.tensor([prior_high[1]]), device=self.device),
+                Exponential(torch.tensor([0.5])),
+                BoxUniform(low=torch.tensor([prior_low[3]]), high=torch.tensor([prior_high[3]]), device=self.device),
+                LogNormal(torch.tensor([-0.6]), torch.tensor([0.75])),
+                MultivariateNormal(torch.tensor([3.1]), torch.eye(1,))
+            ])
+        else:
+            raise ValueError(f'Invalid option {prior_type} for prior')
 
         anpe = inference.NPE(prior=prior,
                             density_estimator=posterior_nn('nsf', hidden_features=hidden_features, num_transforms=ntransforms, num_bins=nbins, 
@@ -174,21 +185,47 @@ class sbifit(object):
         x_tensor = torch.as_tensor(x_train.astype(np.float32)).to(self.device)
         y_tensor = torch.as_tensor(y_train.astype(np.float32)).to(self.device)
         anpe.append_simulations(x_tensor, y_tensor)
-        p_x_y_estimator = anpe.train(training_batch_size=batch_size, use_combined_loss=True, validation_fraction=valfrac, 
-                                     stop_after_epochs=stop_epochs, show_train_summary=True)
+        curr_time = datetime.now().strftime("%Y%m%d_%H%M%S")
+        savepath = os.path.join(self.procdir, f'npe_{curr_time}.pt')
+
+        if not os.path.exists(savepath):
+            self.logger.info('No trained model found. Training NPE...')
+            p_x_y_estimator = anpe.train(training_batch_size=batch_size, use_combined_loss=True, validation_fraction=valfrac, 
+                                        stop_after_epochs=stop_epochs, show_train_summary=True)
+            # save trained NPE
+            torch.save(p_x_y_estimator.state_dict(), savepath)
+            pickle.dump(anpe._summary, open(os.path.join(self.procdir, f'npe_{curr_time}.p'), 'wb'))
+            
+            if plot:
+                try:
+                    _ = plot_summary(anpe, tags=["training_loss", "validation_loss"], figsize=(10, 2),)
+                except:
+                    print('Failed to plot')
+
+        self.logger.info(f"Loaded trained NPE from {savepath}")
+        p_x_y_estimator = anpe._build_neural_net(x_tensor, y_tensor)
+        p_x_y_estimator.load_state_dict(torch.load(savepath, map_location=torch.device(self.device)))
+        anpe._x_shape = sbi_utils.x_shape_from_simulation(y_tensor)
+        hatp_x_y = anpe.build_posterior(p_x_y_estimator)   
+
+        return hatp_x_y
         
-        # save trained NPE
-        savepath = os.path.join(self.procdir, 'npe.pt')
-        torch.save(p_x_y_estimator.state_dict(), savepath)
-        pickle.dump(anpe._summary, open(os.path.join(self.procdir, 'npe.p'), 'wb'))
+    def _sampling_timeout_handler(self, signum, frame):
+        raise TimeoutError("Sampling exceeded time limit")
 
-        if plot:
-            try:
-                _ = plot_summary(anpe, tags=["training_loss", "validation_loss"], figsize=(10, 2),)
-            except:
-                print('Failed to plot')
-
-        return savepath
+    def sample_with_timeout(self, hatp, sample_shape=(2500,), x=None, timeout=10, reset_handler=False, **kwargs):
+        cur_handler = signal.getsignal(signal.SIGALRM)
+        signal.signal(signal.SIGALRM, self._sampling_timeout_handler)
+        signal.alarm(int(timeout))
+        try:
+            result = hatp.sample(sample_shape, x=x, **kwargs)
+        except TimeoutError:
+            print(f"Sampling timed out after {timeout} seconds.")
+            result = None
+        finally:
+            signal.alarm(0) 
+            if reset_handler: signal.signal(signal.SIGALRM, cur_handler) 
+        return result
     
     def infer_sbi(self):
         raise NotImplementedError()
@@ -216,4 +253,4 @@ if __name__ == '__main__':
         sedfit.sim_training_set(ntrain=int(args.ntrain))
         sys.exit()
 
-    sedfit.train_sbi()
+    hatp_x_y = sedfit.baseline_sbi_model()
