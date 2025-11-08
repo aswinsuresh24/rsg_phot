@@ -78,27 +78,56 @@ class sbifit(object):
         self.gen_mc_obj = mcmc(dm=0, dmerr=0, z=self.logz, model_type=self.modeltype, comp=self.comp)
         self.gen_mc_obj.verbose = False
 
-    def sim_training_set(self, ntrain:int=int(4e5)) -> None:
+    def sim_training_set(self, ntrain:int=int(4e5), prior_type = 'independent') -> None:
         if not isinstance(ntrain, int):
             ntrain = int(ntrain)
 
-        self.ntrain = ntrain
-        sim = np.zeros((self.ntrain, len(self.gen_mc_obj.model_fit_params) + len(self.rsgloader.nrc_filts)))
+        sim = np.zeros((ntrain, len(self.gen_mc_obj.model_fit_params) + len(self.rsgloader.nrc_filts)))
 
-        self.gen_mc_obj.bounds['tau_V'] = [1e-4, 3]
-        # sample uniformly for all parameters except tau_V
-        sample_params = self.gen_mc_obj.get_init_pos(self.ntrain)
-        # broken uniform dsitributions for tau_V
-        f_ = int(0.8*self.ntrain)
-        tau_4 = np.random.uniform(1e-4, 4, f_)
-        tau_12 = np.random.uniform(4, 12, self.ntrain-f_)
-        sample_params[:, 2] = np.hstack((tau_4, tau_12))
+        if prior_type=='independent':
+            # uniform prior for temperature
+            _temp = BoxUniform(low=torch.tensor([self.gen_mc_obj.bounds['temperature'][0]]), 
+                            high=torch.tensor([self.gen_mc_obj.bounds['temperature'][1]]), 
+                            device=self.device).sample((ntrain,)).numpy()
+            
+            # uniform prior for dust temperature
+            _dtemp = BoxUniform(low=torch.tensor([self.gen_mc_obj.bounds['dust_temp'][0]]), 
+                                high=torch.tensor([self.gen_mc_obj.bounds['dust_temp'][1]]), 
+                                device=self.device).sample((ntrain,)).numpy()
+            
+            # exponential prior for tau_V
+            _tauv = Exponential(torch.tensor([0.5])).sample((ntrain,)).numpy()
+            _tauv[_tauv > 12.0] = 12.0
 
+            # uniform prior for luminosity
+            _lum = BoxUniform(low=torch.tensor([self.gen_mc_obj.bounds['luminosity'][0]]), 
+                              high=torch.tensor([self.gen_mc_obj.bounds['luminosity'][1]]), 
+                              device=self.device).sample((ntrain,)).numpy()
+            
+            # uniform prior for Rv
+            _rv = BoxUniform(low=torch.tensor([self.gen_mc_obj.bounds['Rv'][0]]), 
+                             high=torch.tensor([self.gen_mc_obj.bounds['Rv'][1]]), 
+                             device=self.device).sample((ntrain,)).numpy()
+            
+            # lognormal prior for Av
+            _av = LogNormal(torch.tensor([-0.6]), torch.tensor([0.75])).sample((ntrain,)).numpy()
+            _av[_av > 5.0] = 5.0
+
+            sample_params = np.vstack((_temp.flatten(), _dtemp.flatten(), _tauv.flatten(), _lum.flatten(), _rv.flatten(), _av.flatten())).T
+
+        elif prior_type=='uniform':
+            sample_params = self.gen_mc_obj.get_init_pos(ntrain)
+
+        else:
+            raise ValueError(f'Invalid option {prior_type} for training set priors')
+
+        # save model photometry for all samples
         for i, p_ in enumerate(sample_params):
             model_mag = np.array([self.gen_mc_obj.model[f](p_).flatten()[0] for f in self.rsgloader.nrc_filts]) + self.gen_mc_obj.dm
             sim[i, :len(self.gen_mc_obj.model_fit_params)] = p_
             sim[i, len(self.gen_mc_obj.model_fit_params):] = model_mag
 
+        # save training set to csv
         cols = self.gen_mc_obj.model_fit_params + list(self.rsgloader.nrc_filts)
         df = pd.DataFrame(sim, columns=cols)
         sim_outdir = 'data/sbi'
@@ -107,7 +136,6 @@ class sbifit(object):
         self.training_set_fname = fname
 
         df.to_csv(fname, index=False)
-        self.gen_mc_obj.reset_bounds()
 
     def _exp(self, x, a, x0, scale):
         return a*np.exp((x-x0)*scale)
@@ -140,15 +168,13 @@ class sbifit(object):
 
         return train_err
 
-    def baseline_sbi_model(self, prior_type='uniform', hidden_features=45, ntransforms=5, 
+    def baseline_sbi_model(self, prior_type='independent', hidden_features=50, ntransforms=5, 
                            nbins=10, batch_size=256, valfrac=0.1, stop_epochs=50, 
                            noise_floor=0.01, plot=False):
         assert self.rsgloader.rsgcat is not None
 
         ndim = int(len(self.gen_mc_obj.model_fit_params))
         train = pd.read_csv(self.training_set_fname)
-        # train['temperature'] = np.log10(train['temperature'])
-        # train['dust_temp'] = np.log10(train['dust_temp'])
         mags = train[train.columns[ndim:]]
         params = train[train.columns[:ndim]]
 
@@ -158,32 +184,33 @@ class sbifit(object):
         y_err = pd.DataFrame(train_err, columns=self.rsgloader.cols['errcols'][self.rsgloader.flt_mask])
         y_train = pd.concat([y_mags, y_err], axis=1)
         y_train = np.array(y_train, dtype=float)
+        self.x_train, self.y_train = x_train, y_train
 
-        prior_low = sbi_pp.prior_from_train('ll', x_train=x_train)
-        prior_high = sbi_pp.prior_from_train('ul', x_train=x_train)
+        prior_low = sbi_pp.prior_from_train('ll', x_train=self.x_train)
+        prior_high = sbi_pp.prior_from_train('ul', x_train=self.x_train)
 
         if prior_type.lower() == 'uniform':
             lower_bounds = torch.tensor(prior_low).to(self.device)
             upper_bounds = torch.tensor(prior_high).to(self.device)
-            prior = sbi_utils.BoxUniform(low=lower_bounds, high=upper_bounds, device=self.device)
+            self.prior = sbi_utils.BoxUniform(low=lower_bounds, high=upper_bounds, device=self.device)
         elif prior_type.lower() == 'independent':
-            prior = MultipleIndependent([
+            self.prior = MultipleIndependent([
                 BoxUniform(low=torch.tensor([prior_low[0]]), high=torch.tensor([prior_high[0]]), device=self.device),
                 BoxUniform(low=torch.tensor([prior_low[1]]), high=torch.tensor([prior_high[1]]), device=self.device),
                 Exponential(torch.tensor([0.5])),
                 BoxUniform(low=torch.tensor([prior_low[3]]), high=torch.tensor([prior_high[3]]), device=self.device),
-                LogNormal(torch.tensor([-0.6]), torch.tensor([0.75])),
-                MultivariateNormal(torch.tensor([3.1]), torch.eye(1,))
+                BoxUniform(low=torch.tensor([prior_low[4]]), high=torch.tensor([prior_high[4]]), device=self.device),
+                LogNormal(torch.tensor([-0.6]), torch.tensor([0.75]))
             ])
         else:
             raise ValueError(f'Invalid option {prior_type} for prior')
 
-        anpe = inference.NPE(prior=prior,
+        anpe = inference.NPE(prior=self.prior,
                             density_estimator=posterior_nn('nsf', hidden_features=hidden_features, num_transforms=ntransforms, num_bins=nbins, 
                                                             z_score_theta='independent', z_score_x='independent'),
                             device=self.device,)
-        x_tensor = torch.as_tensor(x_train.astype(np.float32)).to(self.device)
-        y_tensor = torch.as_tensor(y_train.astype(np.float32)).to(self.device)
+        x_tensor = torch.as_tensor(self.x_train.astype(np.float32)).to(self.device)
+        y_tensor = torch.as_tensor(self.y_train.astype(np.float32)).to(self.device)
         anpe.append_simulations(x_tensor, y_tensor)
         curr_time = datetime.now().strftime("%Y%m%d_%H%M%S")
         savepath = os.path.join(self.procdir, f'npe_{curr_time}.pt')
