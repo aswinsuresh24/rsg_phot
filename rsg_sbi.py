@@ -26,8 +26,7 @@ from sbi.utils import process_prior
 from sbi import inference
 from sbi.neural_nets import posterior_nn
 from sbi.analysis import plot_summary
-from torch.distributions import MultivariateNormal, Exponential, LogNormal
-from torch.distributions import Distribution
+from torch.distributions import Exponential, LogNormal
 from sbi.utils import MultipleIndependent, BoxUniform
 import sbi_pp
 import signal
@@ -66,51 +65,6 @@ def create_parser():
 
     return parser
 
-class LogUniform(Distribution):
-    def __init__(self, low: torch.Tensor, high: torch.Tensor, return_numpy: bool = False, device:str = 'cpu'):
-        super().__init__()
-        self.lower = low.reshape(1)
-        self.upper = high.reshape(1)
-        self.dist = BoxUniform(low, high, device=device)
-        self.return_numpy = return_numpy
-        self.device = device
-
-        self._batch_shape = torch.Size([low.numel()])
-        self._event_shape = torch.Size([])
-
-    def sample(self, sample_shape=torch.Size([])):
-        samples = self.dist.sample(sample_shape)
-        samples = torch.log10(samples)
-        return samples.numpy() if self.return_numpy else samples
-
-    def log_prob(self, values: torch.Tensor):
-        # p(log10 x) = p(x) * |dx/d(log10 x)| = 1/(upper-lower) * ln(10) * 10^{v}  (inside bounds)
-        lower = torch.as_tensor(self.lower, dtype=values.dtype, device=self.device)
-        upper = torch.as_tensor(self.upper, dtype=values.dtype, device=self.device)
-        ln10 = torch.log(torch.tensor(10.0, dtype=values.dtype, device=self.device))
-        x = torch.pow(10.0, values)
-
-        bounds = (x >= lower) & (x <= upper)
-
-        denom = upper - lower
-        # log p(x) where p(x)=1/(upper-lower)
-        log_px = -torch.log(denom)
-        # log Jacobian of transform v -> x : log( ln(10) * 10^v ) = log(ln10) + v * ln10
-        log_jc = torch.log(ln10) + values*ln10
-
-        logp = log_px + log_jc
-        neginf = torch.tensor(float("-inf"), dtype=values.dtype, device=self.device)
-        logp = torch.where(bounds, logp, neginf)
-
-        return logp.numpy() if self.return_numpy else logp
-    
-    def to(self, device):
-        """Move internal tensors to a given device, returning self for chaining."""
-        self.lower = self.lower.to(device)
-        self.upper = self.upper.to(device)
-        if hasattr(self, "_box"):
-            self._box = BoxUniform(self.lower, self.upper, device=device)
-        return self
 
 class sbifit(object):
     def __init__(self, rsg_dataloader:rsg_dataloader, comp:str='sil', modeltype:str='MARCS', device:str='cpu'):
@@ -228,8 +182,8 @@ class sbifit(object):
 
         ndim = int(len(self.gen_mc_obj.model_fit_params))
         train = pd.read_csv(self.training_set_fname)
-        train['temperature'] = np.log10(train['temperature'])
-        train['dust_temp'] = np.log10(train['dust_temp'])
+        train['temperature'] = train['temperature']/1e3
+        train['dust_temp'] = train['dust_temp']/1e3
         mags = train[train.columns[ndim:]]
         params = train[train.columns[:ndim]]
 
@@ -250,8 +204,8 @@ class sbifit(object):
             self.prior = sbi_utils.BoxUniform(low=lower_bounds, high=upper_bounds, device=self.device)
         elif prior_type.lower() == 'independent':
             self.prior = MultipleIndependent([
-                LogUniform(low=torch.tensor([10**prior_low[0]]), high=torch.tensor([10**prior_high[0]]), device=self.device),
-                LogUniform(low=torch.tensor([10**prior_low[1]]), high=torch.tensor([10**prior_high[1]]), device=self.device),
+                BoxUniform(low=torch.tensor([prior_low[0]]), high=torch.tensor([prior_high[0]]), device=self.device),
+                BoxUniform(low=torch.tensor([prior_low[1]]), high=torch.tensor([prior_high[1]]), device=self.device),
                 Exponential(torch.tensor([0.5])),
                 BoxUniform(low=torch.tensor([prior_low[3]]), high=torch.tensor([prior_high[3]]), device=self.device),
                 BoxUniform(low=torch.tensor([prior_low[4]]), high=torch.tensor([prior_high[4]]), device=self.device),
