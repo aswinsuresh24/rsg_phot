@@ -57,7 +57,7 @@ def create_parser():
     parser.add_argument('--ncores', type=int, default=1, help='Number of CPU cores')
     parser.add_argument('--device', type=str, default='cpu', help='Device for PyTorch (CPU / GPU)')
     parser.add_argument('--sim_train', type=bool, default=False, help='Generate training set samples')
-    parser.add_argument('--ntrain', type=float, default=4e5, help='Number of samples in simulated training set')
+    parser.add_argument('--ntrain', type=float, default=3e5, help='Number of samples in simulated training set')
     parser.add_argument('--flow_model', type=str, default='nsf', help='Flow model for neural posterior estimation (nsf / maf / mdn)')
     parser.add_argument('--hidden_features', type=int, default=50, help='Number of hidden features')
     parser.add_argument('--ntransforms', type=int, default=5, help='Number of transforms in normalizing flow')
@@ -65,6 +65,53 @@ def create_parser():
 
     return parser
 
+class TruncatedExponential(torch.distributions.Distribution):
+    def __init__(self, rate:torch.Tensor, low:torch.Tensor, high:torch.Tensor, 
+                 return_numpy:bool=False, validate_args = None, device:str='cpu'):
+
+        self.rate = rate
+        self.low, self.high = low, high
+        self.device = device
+
+        self.base = Exponential(self.rate)
+        self.Z = torch.Tensor(self.base.cdf(torch.tensor(self.high)) - self.base.cdf(torch.tensor(self.low)))
+
+        batch_shape = torch.Size([])
+        event_shape = torch.Size([1])
+        super().__init__(batch_shape, event_shape, validate_args=validate_args)
+
+        self.return_numpy = return_numpy
+
+    @property
+    def arg_constraints(self):
+        return {
+            "rate": torch.distributions.constraints.greater_than(lower_bound=0.0),
+            "low": torch.distributions.constraints.greater_than(lower_bound=0),
+            "high": torch.distributions.constraints.less_than(upper_bound=12.0)
+        }
+    
+    @property
+    def support(self):
+        return torch.distributions.constraints.interval(lower_bound=self.low, upper_bound=self.high)
+    
+    def sample(self, sample_shape=torch.Size([])):
+        u = torch.rand(sample_shape, device=self.device)
+        u = u * self.Z + float(self.base.cdf(torch.tensor(self.low)))
+        x = -torch.log1p(-u) / self.rate
+        x = x.unsqueeze(-1)
+
+        return x
+    
+    def log_prob(self, values):
+        if self.return_numpy:
+            values = torch.as_tensor(values, device=self.device)
+        lp = self.base.log_prob(values) - torch.log(self.Z)
+        mask = (values >= self.low) & (values <= self.high)
+        log_probs = torch.where(mask, lp, torch.tensor(-float("inf"), device=self.device))
+        log_probs = log_probs.squeeze(-1)
+
+        return log_probs.numpy() if self.return_numpy else log_probs
+    
 
 class sbifit(object):
     def __init__(self, rsg_dataloader:rsg_dataloader, comp:str='sil', modeltype:str='MARCS', device:str='cpu'):
@@ -84,7 +131,7 @@ class sbifit(object):
         self.gen_mc_obj = mcmc(dm=0, dmerr=0, z=self.logz, model_type=self.modeltype, comp=self.comp)
         self.gen_mc_obj.verbose = False
 
-    def sim_training_set(self, ntrain:int=int(4e5), prior_type = 'independent') -> None:
+    def sim_training_set(self, ntrain:int=int(3e5), prior_type = 'independent') -> None:
         if not isinstance(ntrain, int):
             ntrain = int(ntrain)
 
@@ -102,9 +149,10 @@ class sbifit(object):
                                 device=self.device).sample((ntrain,)).numpy()
             
             # exponential prior for tau_V
-            _tauv = Exponential(torch.tensor([0.5])).sample((ntrain,)).numpy()
-            _tauv[_tauv < 2e-4] = 2e-4
-            _tauv[_tauv > 12.0] = 12.0
+            _tauv = TruncatedExponential(rate=torch.tensor([0.5]),
+                                         low=torch.tensor([self.gen_mc_obj.bounds['tau_V'][0]]),
+                                         high=torch.tensor([self.gen_mc_obj.bounds['tau_V'][1]]),
+                                         device=self.device).sample((ntrain,)).numpy()
 
             # uniform prior for luminosity
             _lum = BoxUniform(low=torch.tensor([self.gen_mc_obj.bounds['luminosity'][0]]), 
@@ -117,8 +165,10 @@ class sbifit(object):
                              device=self.device).sample((ntrain,)).numpy()
             
             # lognormal prior for Av
-            _av = LogNormal(torch.tensor([-0.6]), torch.tensor([0.75])).sample((ntrain,)).numpy()
-            _av[_av > 5.0] = 5.0
+            _av = TruncatedExponential(rate=torch.tensor([1.0]),
+                                       low=torch.tensor([self.gen_mc_obj.bounds['Av'][0]]),
+                                       high=torch.tensor([self.gen_mc_obj.bounds['Av'][1]]),
+                                       device=self.device).sample((ntrain,)).numpy()
 
             sample_params = np.vstack((_temp.flatten(), _dtemp.flatten(), _tauv.flatten(), _lum.flatten(), _rv.flatten(), _av.flatten())).T
 
@@ -177,7 +227,7 @@ class sbifit(object):
 
     def baseline_sbi_model(self, prior_type='independent', flow_model='nsf', hidden_features=50,
                            ntransforms=5, nbins=10, batch_size=256, valfrac=0.1, stop_epochs=50, 
-                           noise_floor=0.01, plot=False):
+                           noise_floor=0.01, savepath=None, plot=False):
         assert self.rsgloader.rsgcat is not None
 
         ndim = int(len(self.gen_mc_obj.model_fit_params))
@@ -206,10 +256,12 @@ class sbifit(object):
             self.prior = MultipleIndependent([
                 BoxUniform(low=torch.tensor([prior_low[0]]), high=torch.tensor([prior_high[0]]), device=self.device),
                 BoxUniform(low=torch.tensor([prior_low[1]]), high=torch.tensor([prior_high[1]]), device=self.device),
-                Exponential(torch.tensor([0.5])),
+                TruncatedExponential(rate=torch.tensor([0.5]), low=torch.Tensor([prior_low[2]]), 
+                                     high=torch.Tensor([prior_high[2]]), device=self.device),
                 BoxUniform(low=torch.tensor([prior_low[3]]), high=torch.tensor([prior_high[3]]), device=self.device),
                 BoxUniform(low=torch.tensor([prior_low[4]]), high=torch.tensor([prior_high[4]]), device=self.device),
-                LogNormal(torch.tensor([-0.6]), torch.tensor([0.75]))
+                TruncatedExponential(rate=torch.tensor([1.0]), low=torch.Tensor([prior_low[5]]), 
+                                     high=torch.Tensor([prior_high[5]]), device=self.device),
             ])
         else:
             raise ValueError(f'Invalid option {prior_type} for prior')
@@ -221,7 +273,8 @@ class sbifit(object):
         x_tensor = torch.as_tensor(self.x_train.astype(np.float32)).to(self.device)
         y_tensor = torch.as_tensor(self.y_train.astype(np.float32)).to(self.device)
         anpe.append_simulations(x_tensor, y_tensor)
-        savepath = os.path.join(self.procdir, f'npe_{flow_model}_{hidden_features}_{ntransforms}_{nbins}.pt')
+        if savepath is None:
+            savepath = os.path.join(self.procdir, f'npe_{flow_model}_{hidden_features}_{ntransforms}_{nbins}.pt')
 
         if not os.path.exists(savepath):
             self.logger.info('No trained model found. Training NPE...')
