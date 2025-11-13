@@ -178,6 +178,7 @@ class sbifit(object):
         else:
             raise ValueError(f'Invalid option {prior_type} for training set priors')
 
+        self.logger.info(f'Generating {ntrain} training samples following {prior_type}')
         # save model photometry for all samples
         for i, p_ in enumerate(sample_params):
             model_mag = np.array([self.gen_mc_obj.model[f](p_).flatten()[0] for f in self.rsgloader.nrc_filts]) + self.gen_mc_obj.dm
@@ -231,19 +232,33 @@ class sbifit(object):
         assert self.rsgloader.rsgcat is not None
 
         ndim = int(len(self.gen_mc_obj.model_fit_params))
-        train = pd.read_csv(self.training_set_fname)
-        train['temperature'] = train['temperature']/1e3
-        train['dust_temp'] = train['dust_temp']/1e3
-        mags = train[train.columns[ndim:]]
-        params = train[train.columns[:ndim]]
+        load_train = os.path.join(self.procdir, f'train_{flow_model}_{hidden_features}_{ntransforms}_{nbins}.csv')
+        if os.path.exists(load_train):
+            self.logger.info(f'Training set exists; Loading x and y train from {load_train}')
+            train_set = pd.read_csv(load_train)
+            params = train_set[train_set.columns[:ndim]]
+            phot = train_set[train_set.columns[ndim:]]
+            self.x_train = params.to_numpy(dtype=np.float32)
+            self.y_train = phot.to_numpy(dtype=np.float32)
+        else:
+            self.logger.info(f'Training set does not exist; Will be saved at {load_train}')
+            train = pd.read_csv(self.training_set_fname)
+            train['temperature'] = train['temperature']/1e3
+            train['dust_temp'] = train['dust_temp']/1e3
+            mags = train[train.columns[ndim:]]
+            params = train[train.columns[:ndim]]
 
-        x_train = np.array(params, dtype=float)
-        y_mags = mags[self.rsgloader.cols['flts'][self.rsgloader.flt_mask]]
-        train_err = self.sim_noise(train, noise_floor=noise_floor)
-        y_err = pd.DataFrame(train_err, columns=self.rsgloader.cols['errcols'][self.rsgloader.flt_mask])
-        y_train = pd.concat([y_mags, y_err], axis=1)
-        y_train = np.array(y_train, dtype=float)
-        self.x_train, self.y_train = x_train, y_train
+            self.x_train = params.to_numpy(dtype=np.float32)
+            y_mags = mags[self.rsgloader.cols['flts'][self.rsgloader.flt_mask]]
+            y_mags = y_mags.map(lambda x: x + np.random.normal(loc=0.0, scale=0.02))
+            
+            train_err = self.sim_noise(train, noise_floor=noise_floor)
+            y_err = pd.DataFrame(train_err, columns=self.rsgloader.cols['errcols'][self.rsgloader.flt_mask])
+            y_phot = pd.concat([y_mags, y_err], axis=1)
+            self.y_train = y_phot.to_numpy(dtype=np.float32)
+
+            train_set = pd.concat([params, y_phot], axis=1)
+            train_set.to_csv(load_train, index=False)
 
         prior_low = sbi_pp.prior_from_train('ll', x_train=self.x_train)
         prior_high = sbi_pp.prior_from_train('ul', x_train=self.x_train)
