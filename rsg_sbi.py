@@ -52,11 +52,11 @@ def create_parser():
     parser.add_argument('--trgb', nargs='*', default=('F090W', 30), help='Tip of red giant branch')
     parser.add_argument('--modeltype', type=str, default='MARCS', help='Family of RSG models to fit data to (MARCS / MARCS15 / NewEra)')
     parser.add_argument('--comp', type=str, default='sil', help='Dust composition of RSG model (sil / grf)')
-    parser.add_argument('--keep_narrow', type=bool, default=False, help='Fit narrow band photometry?')
+    parser.add_argument('--keep_narrow', default=False, action=argparse.BooleanOptionalAction, help='Fit narrow band photometry?')
     parser.add_argument('--ignore_filts', nargs='*', help='Photometry to avoid fitting')
     parser.add_argument('--ncores', type=int, default=1, help='Number of CPU cores')
     parser.add_argument('--device', type=str, default='cpu', help='Device for PyTorch (CPU / GPU)')
-    parser.add_argument('--sim_train', type=bool, default=False, help='Generate training set samples')
+    parser.add_argument('--sim_train', default=False, action=argparse.BooleanOptionalAction, help='Generate training set samples?')
     parser.add_argument('--ntrain', type=float, default=3e5, help='Number of samples in simulated training set')
     parser.add_argument('--flow_model', type=str, default='nsf', help='Flow model for neural posterior estimation (nsf / maf / mdn)')
     parser.add_argument('--hidden_features', type=int, default=50, help='Number of hidden features')
@@ -198,7 +198,7 @@ class sbifit(object):
     def _exp(self, x, a, x0, scale):
         return a*np.exp((x-x0)*scale)
 
-    def sim_noise(self, train:pd.DataFrame, noise_floor:float=0.01, interp_bins:int=20) -> np.ndarray:
+    def sim_mag_err(self, train:pd.DataFrame, noise_floor:float=0.01, interp_bins:int=20) -> np.ndarray:
         erc_ = self.rsgloader.cols['errcols'][self.rsgloader.flt_mask]
         mc_ = self.rsgloader.cols['magcols'][self.rsgloader.flt_mask]
         tc_ = self.rsgloader.cols['flts'][self.rsgloader.flt_mask]
@@ -225,6 +225,33 @@ class sbifit(object):
             train_err[:, i] = norm_err
 
         return train_err
+    
+    def sim_obs_noise(self, ymags):
+        rsgcat = self.rsgloader.rsgcat
+        off_mags = np.zeros_like(rsgcat[self.rsgloader.cols['magcols'][self.rsgloader.flt_mask]].values)
+        for i, idx in tqdm(enumerate(rsgcat.index)):
+            d = 0.0
+            row = rsgcat.loc[idx]
+            obsmag = row[self.rsgloader.cols['magcols'][self.rsgloader.flt_mask]]
+            t_, td_, l_, tu_, a_ = row['teff_chisq'], row['tdust_chisq'], np.log10(row['lum_chisq']), row['tau_chisq'], row['av_chisq']
+            if l_ > 6.0: 
+                d = l_ - 6.0
+                l_ = 6.0
+            chisq_params = np.meshgrid([t_, td_, tu_, l_, 3.1, a_], indexing='ij', sparse=True)
+            model_mag = np.array([self.rsgloader.gen_mc_obj.model[f](chisq_params).flatten()[0] for f in self.rsgloader.cols['flts'][self.rsgloader.flt_mask]]) + self.rsgloader.gen_mc_obj.dm
+            model_mag = model_mag - 2.5*d
+            off_mags[i, :] = (obsmag - model_mag).values
+
+        noise_pdf = np.zeros_like(ymags.values)
+        nsamp = len(ymags)
+        for i, offs in enumerate(off_mags.T):
+            mask = np.abs(offs) > 1
+            kde = gaussian_kde(offs[~mask])
+            resamp_noise = kde.resample(nsamp)
+            noise_pdf[:, i] = resamp_noise
+
+        ymags = ymags + noise_pdf
+        return ymags
 
     def baseline_sbi_model(self, prior_type='independent', flow_model='nsf', hidden_features=50,
                            ntransforms=5, nbins=10, batch_size=256, valfrac=0.1, stop_epochs=50, 
@@ -232,7 +259,8 @@ class sbifit(object):
         assert self.rsgloader.rsgcat is not None
 
         ndim = int(len(self.gen_mc_obj.model_fit_params))
-        load_train = os.path.join(self.procdir, f'train_{flow_model}_{hidden_features}_{ntransforms}_{nbins}.csv')
+        load_train = os.path.join(self.procdir, f'train_{self.rsgloader.gal}.csv')
+        #load_train = os.path.join(self.procdir, f'train_{flow_model}_{hidden_features}_{ntransforms}_{nbins}.csv')
         if os.path.exists(load_train):
             self.logger.info(f'Training set exists; Loading x and y train from {load_train}')
             train_set = pd.read_csv(load_train)
@@ -250,9 +278,9 @@ class sbifit(object):
 
             self.x_train = params.to_numpy(dtype=np.float32)
             y_mags = mags[self.rsgloader.cols['flts'][self.rsgloader.flt_mask]]
-            y_mags = y_mags.map(lambda x: x + np.random.normal(loc=0.0, scale=0.02))
+            y_mags = self.sim_obs_noise(y_mags)
             
-            train_err = self.sim_noise(train, noise_floor=noise_floor)
+            train_err = self.sim_mag_err(train, noise_floor=noise_floor)
             y_err = pd.DataFrame(train_err, columns=self.rsgloader.cols['errcols'][self.rsgloader.flt_mask])
             y_phot = pd.concat([y_mags, y_err], axis=1)
             self.y_train = y_phot.to_numpy(dtype=np.float32)
@@ -343,7 +371,7 @@ if __name__ == '__main__':
 
     load_args = {
         'gal':args.gal, 'procdir':args.procdir, 'photfile_path':args.photfile_path,
-        'dm':args.dm, 'dmerr':args.dmerr, 'z':args.z, 'trgb':tuple(args.trgb),
+        'dm':args.dm, 'dmerr':args.dmerr, 'z':args.z, 'trgb':tuple([str(args.trgb[0]), float(args.trgb[1])]),
         'modeltype':args.modeltype, 'comp':args.comp,
         'keep_narrow':args.keep_narrow, 'agbcut':False, 'ignore_filts':args.ignore_filts,
         'rsgcat':rsgcat_in

@@ -467,16 +467,16 @@ class mcmcfit(object):
         labels = self.mcfit_params
         ndim = len(labels)
 
-        fig = corner.corner(sample, labels=labels, color='C1', hist_kwargs={'density': True},
-                            label_kwargs={'fontsize': 10}, show_titles=False, title_fmt='.3f', 
-                            plot_datapoints=False, fill_contours=True, truth_color='k', truths=truths)
+        fig = corner.corner(sample, labels=labels, color='C0', hist_kwargs={'density': True},
+                            label_kwargs={'fontsize': 10}, show_titles=False, title_fmt='.3f', plot_density=False,
+                            plot_datapoints=False, fill_contours=False, truth_color='royalblue', truths=truths)
         
         axes = np.array(fig.axes).reshape((ndim, ndim))
         for i in range(ndim):
             ax_diag = axes[i, i]
-            ax_diag.axvline(medians[i], color='k', lw=1)
-            ax_diag.axvline(p16[i], color='k', lw=1, ls='--')
-            ax_diag.axvline(p84[i], color='k', lw=1, ls='--')
+            # ax_diag.axvline(medians[i], color='royalblue', lw=1)
+            ax_diag.axvline(p16[i], color='royalblue', lw=1, ls='--')
+            ax_diag.axvline(p84[i], color='royalblue', lw=1, ls='--')
             ax_diag.set_title(r"${0:.3f}^{{+{1:.3f}}}_{{-{2:.3f}}}$".format(medians[i], p84[i]-medians[i], medians[i]-p16[i]), fontsize=9)
 
             for j in range(i):
@@ -484,6 +484,7 @@ class mcmcfit(object):
                 ax.scatter(medians[j], medians[i], marker='x', color='k', s=30)
 
         fig.suptitle(phot['index'], fontsize=12)
+        return fig
     
     def plot_fit(self, phot, fit_params, min_chi_params, chi_post, chi_best, save=False):
         fit_pe = np.array(list(fit_params.values()))
@@ -531,7 +532,7 @@ class mcmcfit(object):
         if plot:
             self.plot_fit(phot=phot, fit_params=fit_params, min_chi_params=min_chi_params, 
                           chi_post=chi_posterior, chi_best=chi_best)
-            self.plot_corner(phot=phot, min_chi_params=min_chi_params)
+            _ = self.plot_corner(phot=phot, min_chi_params=min_chi_params)
         
         return fit_params, min_chi_params, chi_posterior, chi_best
 
