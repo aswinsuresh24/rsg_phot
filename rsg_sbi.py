@@ -165,7 +165,7 @@ class sbifit(object):
                              device=self.device).sample((ntrain,)).numpy()
             
             # lognormal prior for Av
-            _av = TruncatedExponential(rate=torch.tensor([1.0]),
+            _av = TruncatedExponential(rate=torch.tensor([0.5]),
                                        low=torch.tensor([self.gen_mc_obj.bounds['Av'][0]]),
                                        high=torch.tensor([self.gen_mc_obj.bounds['Av'][1]]),
                                        device=self.device).sample((ntrain,)).numpy()
@@ -229,7 +229,7 @@ class sbifit(object):
     def sim_obs_noise(self, ymags):
         rsgcat = self.rsgloader.rsgcat
         off_mags = np.zeros_like(rsgcat[self.rsgloader.cols['magcols'][self.rsgloader.flt_mask]].values)
-        for i, idx in tqdm(enumerate(rsgcat.index)):
+        for i, idx in enumerate(rsgcat.index):
             d = 0.0
             row = rsgcat.loc[idx]
             obsmag = row[self.rsgloader.cols['magcols'][self.rsgloader.flt_mask]]
@@ -260,7 +260,7 @@ class sbifit(object):
 
         ndim = int(len(self.gen_mc_obj.model_fit_params))
         load_train = os.path.join(self.procdir, f'train_{self.rsgloader.gal}.csv')
-        #load_train = os.path.join(self.procdir, f'train_{flow_model}_{hidden_features}_{ntransforms}_{nbins}.csv')
+        # load_train = os.path.join(self.procdir, f'train_{flow_model}_{hidden_features}_{ntransforms}_{nbins}.csv')
         if os.path.exists(load_train):
             self.logger.info(f'Training set exists; Loading x and y train from {load_train}')
             train_set = pd.read_csv(load_train)

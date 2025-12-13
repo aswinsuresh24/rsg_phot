@@ -15,6 +15,7 @@ import pickle
 import random
 from astropy.stats import sigma_clipped_stats as scs
 import time
+from scipy.stats import truncexpon
 
 DUST_BB_MASS = 2.4319771e-12
 RSG_V_WIND = 50.0 * u.km/u.s
@@ -240,6 +241,12 @@ class mcmc(object):
             chi_best = 0.5*np.sum((phot['mag'] - chi_mag)**2)/(len(chi_mag)-1)
             return (params, min_chi_params, chi_posterior, chi_best)
         return params
+    
+    def log_prior(self, theta):
+        tau, av = theta[2], theta[5]
+        tau_pdf = truncexpon(self.bounds['tau_V'][-1]).logpdf(tau)
+        av_pdf = truncexpon(self.bounds['Av'][-1]).logpdf(av)
+        return tau_pdf + av_pdf
 
     def log_likelihood(self, theta):
         if self.check_bounds(theta):
@@ -255,8 +262,10 @@ class mcmc(object):
         if np.isnan(chi2):
             print(f'likelihood is nan for {theta}')
             return(-np.inf)
+        
+        logp = chi2 + self.log_prior(theta)
 
-        return(chi2)
+        return logp
     
     def log_likelihood_tau(self, theta):
         if self.check_bounds(theta):

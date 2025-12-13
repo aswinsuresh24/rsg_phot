@@ -4,6 +4,7 @@ __pycache__/
 data/dolphot/
 sbi-logs/
 data/rsg*
+examples/
 *csv
 *png
 *pdf
