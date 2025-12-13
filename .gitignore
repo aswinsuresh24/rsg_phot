@@ -5,6 +5,7 @@ data/dolphot/
 sbi-logs/
 data/rsg*
 examples/
+PKG-INFO
 *csv
 *png
 *pdf
