@@ -22,6 +22,8 @@ PKG-INFO
 *.h5
 *.p
 *.pt
+att_mask.py
 frbcat.ipynb
 plots.ipynb
 spec.ipynb
+sbi.ipynb

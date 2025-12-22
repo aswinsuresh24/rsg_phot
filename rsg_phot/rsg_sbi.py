@@ -57,7 +57,7 @@ def create_parser():
     parser.add_argument('--ncores', type=int, default=1, help='Number of CPU cores')
     parser.add_argument('--device', type=str, default='cpu', help='Device for PyTorch (CPU / GPU)')
     parser.add_argument('--sim_train', default=False, action=argparse.BooleanOptionalAction, help='Generate training set samples?')
-    parser.add_argument('--ntrain', type=float, default=3e5, help='Number of samples in simulated training set')
+    parser.add_argument('--ntrain', type=float, default=4e5, help='Number of samples in simulated training set')
     parser.add_argument('--flow_model', type=str, default='nsf', help='Flow model for neural posterior estimation (nsf / maf / mdn)')
     parser.add_argument('--hidden_features', type=int, default=50, help='Number of hidden features')
     parser.add_argument('--ntransforms', type=int, default=5, help='Number of transforms in normalizing flow')
@@ -129,56 +129,73 @@ class sbifit(object):
 
         self.training_set_fname = os.path.join(os.pardir, 'data', 'sbi', f"sim_{self.modeltype}_{self.comp}_Z{self.logz}.csv")
         self.gen_mc_obj = mcmc(dm=0, dmerr=0, z=self.logz, model_type=self.modeltype, comp=self.comp)
+
+        # in practice, rsgcat has a cut logL ~ 3.5 - avoid wasting 15% of the training set 
+        # on observations the model will never have to infer on
+        self.gen_mc_obj.bounds['luminosity'] = [3.4, 6.0]
         self.gen_mc_obj.verbose = False
 
-    def sim_training_set(self, ntrain:int=int(3e5), prior_type = 'independent') -> None:
+    def sample_exp_prior(self, nsamp:int):
+        #uniform prior for temperature                                           
+        _temp = BoxUniform(low=torch.tensor([self.gen_mc_obj.bounds['temperature'][0]]), 
+                           high=torch.tensor([self.gen_mc_obj.bounds['temperature'][1]]), 
+                           device=self.device).sample((nsamp,)).numpy()
+        
+        # uniform prior for dust temperature
+        _dtemp = BoxUniform(low=torch.tensor([self.gen_mc_obj.bounds['dust_temp'][0]]), 
+                            high=torch.tensor([self.gen_mc_obj.bounds['dust_temp'][1]]), 
+                            device=self.device).sample((nsamp,)).numpy()
+        
+        # truncated exponential prior for tau_V
+        _tauv = TruncatedExponential(rate=torch.tensor([0.5]),
+                                     low=torch.tensor([self.gen_mc_obj.bounds['tau_V'][0]]),
+                                     high=torch.tensor([self.gen_mc_obj.bounds['tau_V'][1]]),
+                                     device=self.device).sample((nsamp,)).numpy()
+
+        # uniform prior for luminosity
+        _lum = BoxUniform(low=torch.tensor([self.gen_mc_obj.bounds['luminosity'][0]]), 
+                          high=torch.tensor([self.gen_mc_obj.bounds['luminosity'][1]]), 
+                          device=self.device).sample((nsamp,)).numpy()
+        
+        # uniform prior for Rv
+        _rv = BoxUniform(low=torch.tensor([self.gen_mc_obj.bounds['Rv'][0]]), 
+                         high=torch.tensor([self.gen_mc_obj.bounds['Rv'][1]]), 
+                         device=self.device).sample((nsamp,)).numpy()
+        
+        # truncated exponential prior for Av
+        _av = TruncatedExponential(rate=torch.tensor([0.5]),
+                                   low=torch.tensor([self.gen_mc_obj.bounds['Av'][0]]),
+                                   high=torch.tensor([self.gen_mc_obj.bounds['Av'][1]]),
+                                   device=self.device).sample((nsamp,)).numpy()
+
+        sample_params = np.vstack((_temp.flatten(), _dtemp.flatten(), _tauv.flatten(), _lum.flatten(), _rv.flatten(), _av.flatten())).T
+
+        return sample_params
+
+    def sim_training_set(self, ntrain:int=int(4e5), prior_type = 'mixed', mix_frac=0.3) -> None:
         if not isinstance(ntrain, int):
             ntrain = int(ntrain)
 
+        if prior_type not in ['uniform', 'independent', 'mixed']:
+            raise ValueError(f'prior_type must be "exp", "uniform" or "mixed"')
+
         sim = np.zeros((ntrain, len(self.gen_mc_obj.model_fit_params) + len(self.rsgloader.nrc_filts)))
 
-        if prior_type=='independent':
-            # uniform prior for temperature
-            _temp = BoxUniform(low=torch.tensor([self.gen_mc_obj.bounds['temperature'][0]]), 
-                            high=torch.tensor([self.gen_mc_obj.bounds['temperature'][1]]), 
-                            device=self.device).sample((ntrain,)).numpy()
-            
-            # uniform prior for dust temperature
-            _dtemp = BoxUniform(low=torch.tensor([self.gen_mc_obj.bounds['dust_temp'][0]]), 
-                                high=torch.tensor([self.gen_mc_obj.bounds['dust_temp'][1]]), 
-                                device=self.device).sample((ntrain,)).numpy()
-            
-            # exponential prior for tau_V
-            _tauv = TruncatedExponential(rate=torch.tensor([0.5]),
-                                         low=torch.tensor([self.gen_mc_obj.bounds['tau_V'][0]]),
-                                         high=torch.tensor([self.gen_mc_obj.bounds['tau_V'][1]]),
-                                         device=self.device).sample((ntrain,)).numpy()
-
-            # uniform prior for luminosity
-            _lum = BoxUniform(low=torch.tensor([self.gen_mc_obj.bounds['luminosity'][0]]), 
-                              high=torch.tensor([self.gen_mc_obj.bounds['luminosity'][1]]), 
-                              device=self.device).sample((ntrain,)).numpy()
-            
-            # uniform prior for Rv
-            _rv = BoxUniform(low=torch.tensor([self.gen_mc_obj.bounds['Rv'][0]]), 
-                             high=torch.tensor([self.gen_mc_obj.bounds['Rv'][1]]), 
-                             device=self.device).sample((ntrain,)).numpy()
-            
-            # lognormal prior for Av
-            _av = TruncatedExponential(rate=torch.tensor([0.5]),
-                                       low=torch.tensor([self.gen_mc_obj.bounds['Av'][0]]),
-                                       high=torch.tensor([self.gen_mc_obj.bounds['Av'][1]]),
-                                       device=self.device).sample((ntrain,)).numpy()
-
-            sample_params = np.vstack((_temp.flatten(), _dtemp.flatten(), _tauv.flatten(), _lum.flatten(), _rv.flatten(), _av.flatten())).T
+        if prior_type=='exp':
+            sample_params = self.sample_exp_prior(ntrain)
 
         elif prior_type=='uniform':
             sample_params = self.gen_mc_obj.get_init_pos(ntrain)
 
-        else:
-            raise ValueError(f'Invalid option {prior_type} for training set priors')
+        elif prior_type=='mixed':
+            n_uniform = int(mix_frac*ntrain)
+            n_prior = int(ntrain - n_uniform)
 
-        self.logger.info(f'Generating {ntrain} training samples following {prior_type}')
+            prior_samp = self.sample_exp_prior(n_prior)
+            uniform_samp = self.gen_mc_obj.get_init_pos(n_uniform)
+            sample_params = np.vstack((prior_samp, uniform_samp))
+
+        self.logger.info(f'Generating {ntrain} training samples following {prior_type} prior')
         # save model photometry for all samples
         for i, p_ in enumerate(sample_params):
             model_mag = np.array([self.gen_mc_obj.model[f](p_).flatten()[0] for f in self.rsgloader.nrc_filts]) + self.gen_mc_obj.dm
