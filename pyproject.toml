@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "rsg-phot"
 version = "0.1"
-description = "A Python package for RSG photometry analysis"
+description = "A Python package for red supergiant photometry analysis"
 readme = "README.md"
 requires-python = ">=3.8"
 license = {text = "MIT"}
@@ -28,6 +28,7 @@ dependencies = [
     "synphot",
     "scipy",
     "corner",
+    "trackio"
 ]
 
 [project.urls]

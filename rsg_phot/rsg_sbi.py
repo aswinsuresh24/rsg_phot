@@ -30,6 +30,7 @@ from torch.distributions import Exponential, LogNormal
 from sbi.utils import MultipleIndependent, BoxUniform
 import rsg_phot.sbi_pp as sbi_pp
 import signal
+import trackio
 
 def create_parser():
     '''
@@ -42,6 +43,7 @@ def create_parser():
     '''
 
     parser = argparse.ArgumentParser(description='Fit red supergiant SEDs using SBI++')
+    # rsgloader arguments
     parser.add_argument('-g','--gal', type=str, help='Galaxy name', required=True)
     parser.add_argument('-d', '--procdir', type=str, default='.', help='Directory to save processed photometry', required=True)
     parser.add_argument('-p', '--photfile_path', type=str, default=None, help='Root directory to search for dolphot photometry')
@@ -55,9 +57,12 @@ def create_parser():
     parser.add_argument('--keep_narrow', default=False, action=argparse.BooleanOptionalAction, help='Fit narrow band photometry?')
     parser.add_argument('--ignore_filts', nargs='*', help='Photometry to avoid fitting')
     parser.add_argument('--ncores', type=int, default=1, help='Number of CPU cores')
+
+    # SBI model arguments
     parser.add_argument('--device', type=str, default='cpu', help='Device for PyTorch (CPU / GPU)')
     parser.add_argument('--sim_train', default=False, action=argparse.BooleanOptionalAction, help='Generate training set samples?')
     parser.add_argument('--ntrain', type=float, default=4e5, help='Number of samples in simulated training set')
+    parser.add_argument('--aug_train', type=float, default=None, help='Number of samples in final training set')
     parser.add_argument('--flow_model', type=str, default='nsf', help='Flow model for neural posterior estimation (nsf / maf / mdn)')
     parser.add_argument('--hidden_features', type=int, default=50, help='Number of hidden features')
     parser.add_argument('--ntransforms', type=int, default=5, help='Number of transforms in normalizing flow')
@@ -177,11 +182,11 @@ class sbifit(object):
             ntrain = int(ntrain)
 
         if prior_type not in ['uniform', 'independent', 'mixed']:
-            raise ValueError(f'prior_type must be "exp", "uniform" or "mixed"')
+            raise ValueError(f'prior_type must be "independent", "uniform" or "mixed"')
 
         sim = np.zeros((ntrain, len(self.gen_mc_obj.model_fit_params) + len(self.rsgloader.nrc_filts)))
 
-        if prior_type=='exp':
+        if prior_type=='independent':
             sample_params = self.sample_exp_prior(ntrain)
 
         elif prior_type=='uniform':
@@ -215,7 +220,7 @@ class sbifit(object):
     def _exp(self, x, a, x0, scale):
         return a*np.exp((x-x0)*scale)
 
-    def sim_mag_err(self, train:pd.DataFrame, noise_floor:float=0.01, interp_bins:int=20) -> np.ndarray:
+    def sim_mag_err(self, train:pd.DataFrame, noise_floor:float=0.01, interp_bins:int=30) -> np.ndarray:
         erc_ = self.rsgloader.cols['errcols'][self.rsgloader.flt_mask]
         mc_ = self.rsgloader.cols['magcols'][self.rsgloader.flt_mask]
         tc_ = self.rsgloader.cols['flts'][self.rsgloader.flt_mask]
@@ -224,55 +229,78 @@ class sbifit(object):
         for i, (mcol, ecol, tcol) in enumerate(zip(mc_, erc_, tc_)):
             mag, err = self.rsgloader.rsgcat[mcol].values - self.rsgloader.dm, self.rsgloader.rsgcat[ecol].values
             tmag = train[tcol].values
-            mask = np.isnan(err) | (err > 0.5)
+            mask = np.isnan(err) | (err > 1.0) |np.isnan(mag) | (mag > 36.0 - self.rsgloader.dm) 
             mag, err = mag[~mask], err[~mask]
 
-            vmin, vmax = np.percentile(mag, [1, 99])
+            vmin, vmax = np.percentile(mag, [0.3, 99.7]) 
             mag_bins = np.linspace(vmin, vmax, interp_bins+1)
             bin_centers = 0.5 * (mag_bins[1:] + mag_bins[:-1])
-            std_errs = np.array([np.std(err[(mag >= mag_bins[j]) & (mag < mag_bins[j+1])]) for j in range(interp_bins)])
+            std_errs = np.array([np.std(err[(mag >= mag_bins[j]) & (mag < mag_bins[j+1])], ddof=1) for j in range(interp_bins)])
+            mu_errs = np.array([np.mean(err[(mag >= mag_bins[j]) & (mag < mag_bins[j+1])]) for j in range(interp_bins)])
+
+            mu_interp = interpolate.InterpolatedUnivariateSpline(bin_centers, mu_errs, k=3, ext=3)
             sig_interp = interpolate.InterpolatedUnivariateSpline(bin_centers, std_errs, k=3, ext=3)
+            mean_train_errs = mu_interp(tmag)
+            sig_train_errs = sig_interp(tmag)
 
-            popt, _ = curve_fit(self._exp, mag, err)
-            mean_errs = self._exp(tmag, *popt)
-            sig_errs = sig_interp(tmag)
-
-            norm_err = np.random.normal(mean_errs, sig_errs)
+            norm_err = np.random.normal(mean_train_errs, sig_train_errs)
             norm_err = np.sqrt(norm_err**2 + noise_floor**2)
+            norm_err[tmag > max(mag)] = mu_interp(max(mag))
             train_err[:, i] = norm_err
 
         return train_err
     
-    def sim_obs_noise(self, ymags):
+    def sim_obs_noise(self, ymags, sim_type='chisq'):
         rsgcat = self.rsgloader.rsgcat
-        off_mags = np.zeros_like(rsgcat[self.rsgloader.cols['magcols'][self.rsgloader.flt_mask]].values)
-        for i, idx in enumerate(rsgcat.index):
-            d = 0.0
-            row = rsgcat.loc[idx]
-            obsmag = row[self.rsgloader.cols['magcols'][self.rsgloader.flt_mask]]
-            t_, td_, l_, tu_, a_ = row['teff_chisq'], row['tdust_chisq'], np.log10(row['lum_chisq']), row['tau_chisq'], row['av_chisq']
-            if l_ > 6.0: 
-                d = l_ - 6.0
-                l_ = 6.0
-            chisq_params = np.meshgrid([t_, td_, tu_, l_, 3.1, a_], indexing='ij', sparse=True)
-            model_mag = np.array([self.rsgloader.gen_mc_obj.model[f](chisq_params).flatten()[0] for f in self.rsgloader.cols['flts'][self.rsgloader.flt_mask]]) + self.rsgloader.gen_mc_obj.dm
-            model_mag = model_mag - 2.5*d
-            off_mags[i, :] = (obsmag - model_mag).values
-
         noise_pdf = np.zeros_like(ymags.values)
-        nsamp = len(ymags)
-        for i, offs in enumerate(off_mags.T):
-            mask = np.abs(offs) > 1
-            kde = gaussian_kde(offs[~mask])
-            resamp_noise = kde.resample(nsamp)
-            noise_pdf[:, i] = resamp_noise
+        if sim_type == 'chisq':
+            self.logger.info(f'Adding simulator jitter based on chi sq values')
+            off_mags = np.zeros_like(rsgcat[self.rsgloader.cols['magcols'][self.rsgloader.flt_mask]].values)
+            for i, idx in enumerate(rsgcat.index):
+                d = 0.0
+                row = rsgcat.loc[idx]
+                obsmag = row[self.rsgloader.cols['magcols'][self.rsgloader.flt_mask]]
+                t_, td_, l_, tu_, a_ = row['teff_chisq'], row['tdust_chisq'], np.log10(row['lum_chisq']), row['tau_chisq'], row['av_chisq']
+                if l_ > 6.0: 
+                    d = l_ - 6.0
+                    l_ = 6.0
+                chisq_params = np.meshgrid([t_, td_, tu_, l_, 3.1, a_], indexing='ij', sparse=True)
+                model_mag = np.array([self.rsgloader.gen_mc_obj.model[f](chisq_params).flatten()[0] for f in self.rsgloader.cols['flts'][self.rsgloader.flt_mask]]) + self.rsgloader.gen_mc_obj.dm
+                model_mag = model_mag - 2.5*d
+                off_mags[i, :] = (obsmag - model_mag).values
+
+            nsamp = len(ymags)
+            for i, offs in enumerate(off_mags.T):
+                mask = np.abs(offs) > 1
+                weights = (1/rsgcat['chimin'].values[~mask]) / np.sum(1/rsgcat['chimin'].values[~mask])
+
+                mu = np.average(offs[~mask], weights=weights)
+                sig = np.sqrt(np.average((offs[~mask] - mu)**2, weights=weights))
+                resamp_noise = np.random.normal(mu, sig, size=nsamp)
+                p16, p84 = np.percentile(resamp_noise, 16), np.percentile(resamp_noise, 84)
+                resamp_noise  = np.clip(resamp_noise, a_min=p16, a_max=p84) 
+                noise_pdf[:, i] = resamp_noise
+
+        elif sim_type == 'random':
+            self.logger.info(f'Adding simulator jitter using random Gaussian noise')
+            for i in range(len(self.rsgloader.cols['magcols'][self.rsgloader.flt_mask])):
+                noise_pdf[:, i] = np.random.normal(0.0, 0.01, size=len(ymags))
 
         ymags = ymags + noise_pdf
         return ymags
+    
+    def augment_training_set(self, train, size=int(4e5)):
+        n = len(train)
+        reps = int(np.ceil(size / n))
+        self.logger.info(f'Augmenting training set my duplicating {reps} times and sampling {size} simulations')
+        aug = pd.concat([train] * reps, ignore_index=True)
+        aug = aug.sample(n=size, replace=False).reset_index(drop=True)
 
-    def baseline_sbi_model(self, prior_type='independent', flow_model='nsf', hidden_features=50,
-                           ntransforms=5, nbins=10, batch_size=256, valfrac=0.1, stop_epochs=50, 
-                           noise_floor=0.01, savepath=None, plot=False):
+        return aug
+
+    def baseline_sbi_model(self, prior_type='independent', augment_train=True, augment_size=int(5e5), 
+                           flow_model='nsf', hidden_features=15, ntransforms=3, nbins=10, batch_size=256, 
+                           valfrac=0.1, stop_epochs=50, noise_floor=0.01, savepath=None):
         assert self.rsgloader.rsgcat is not None
 
         ndim = int(len(self.gen_mc_obj.model_fit_params))
@@ -288,6 +316,8 @@ class sbifit(object):
         else:
             self.logger.info(f'Training set does not exist; Will be saved at {load_train}')
             train = pd.read_csv(self.training_set_fname)
+            if augment_train:
+                train = self.augment_training_set(train, augment_size)
             train['temperature'] = train['temperature']/1e3
             train['dust_temp'] = train['dust_temp']/1e3
             mags = train[train.columns[ndim:]]
@@ -295,7 +325,7 @@ class sbifit(object):
 
             self.x_train = params.to_numpy(dtype=np.float32)
             y_mags = mags[self.rsgloader.cols['flts'][self.rsgloader.flt_mask]]
-            y_mags = self.sim_obs_noise(y_mags)
+            y_mags = self.sim_obs_noise(y_mags, sim_type='chisq')
             
             train_err = self.sim_mag_err(train, noise_floor=noise_floor)
             y_err = pd.DataFrame(train_err, columns=self.rsgloader.cols['errcols'][self.rsgloader.flt_mask])
@@ -338,23 +368,40 @@ class sbifit(object):
 
         if not os.path.exists(savepath):
             self.logger.info('No trained model found. Training NPE...')
+            # start experiment tracking 
+            trackio.init(project="jwst-rsg-sbi",
+                config={"flow_model":flow_model,
+                        "hidden_features":hidden_features,
+                        "ntransforms": ntransforms,
+                        "nbins_nsf": nbins,
+                        "batch_size": batch_size,
+                        "patience": stop_epochs,
+                        "lr": 5e-4,
+                        "ntrain": len(self.x_train)
+                        }
+            )
             p_x_y_estimator = anpe.train(training_batch_size=batch_size, use_combined_loss=True, validation_fraction=valfrac, 
-                                        stop_after_epochs=stop_epochs, show_train_summary=True)
+                                         stop_after_epochs=stop_epochs, show_train_summary=True)
             # save trained NPE
             torch.save(p_x_y_estimator.state_dict(), savepath)
             pickle.dump(anpe._summary, open(os.path.join(self.procdir, f'npe_{flow_model}_{hidden_features}_{ntransforms}_{nbins}.p'), 'wb'))
+
+            summary = anpe._summary
+            for epoch, (train_loss, val_loss) in enumerate(zip(summary["training_loss"], summary["validation_loss"])):
+                trackio.log({
+                    "epoch": epoch,
+                    "train_loss": train_loss,
+                    "val_loss": val_loss,
+                })
+
+            trackio.save(savepath)
+            trackio.finish()
 
         self.logger.info(f"Loaded trained NPE from {savepath}")
         p_x_y_estimator = anpe._build_neural_net(x_tensor, y_tensor)
         p_x_y_estimator.load_state_dict(torch.load(savepath, map_location=torch.device(self.device)))
         anpe._x_shape = sbi_utils.x_shape_from_simulation(y_tensor)
-        hatp_x_y = anpe.build_posterior(p_x_y_estimator)   
-
-        if plot:
-            try:
-                _ = plot_summary(anpe, tags=["training_loss", "validation_loss"], figsize=(10, 2),)
-            except:
-                print('Failed to plot')
+        hatp_x_y = anpe.build_posterior(p_x_y_estimator)
 
         return hatp_x_y
         
@@ -401,5 +448,13 @@ if __name__ == '__main__':
         sedfit.sim_training_set(ntrain=int(args.ntrain))
         sys.exit()
 
-    hatp_x_y = sedfit.baseline_sbi_model(flow_model=args.flow_model, hidden_features=args.hidden_features,
-                                         ntransforms=args.ntransforms, nbins=args.nbins)
+    if (args.aug_train is not None) and (isinstance(args.aug_train, int) | isinstance(args.aug_train, float)):
+        augment_train = True
+        augment_size = int(args.aug_train)
+    else:
+        augment_train = False
+        augment_size = int(5e5) # won't be used
+
+    hatp_x_y = sedfit.baseline_sbi_model(prior_type='independent', augment_train=augment_train, augment_size=augment_size,
+                                         flow_model=args.flow_model, hidden_features=args.hidden_features, ntransforms=args.ntransforms, 
+                                         nbins=args.nbins, batch_size=256, valfrac=0.1, stop_epochs=50)
