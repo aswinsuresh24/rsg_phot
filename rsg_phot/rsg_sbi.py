@@ -70,6 +70,19 @@ def create_parser():
 
     return parser
 
+
+class NewlineStdout:
+    def __init__(self, stream):
+        self.stream = stream
+
+    def write(self, msg):
+        self.stream.write(msg.replace('\r', '\n'))
+        self.stream.flush()
+
+    def flush(self):
+        self.stream.flush()
+
+
 class TruncatedExponential(torch.distributions.Distribution):
     def __init__(self, rate:torch.Tensor, low:torch.Tensor, high:torch.Tensor, 
                  return_numpy:bool=False, validate_args = None, device:str='cpu'):
@@ -380,6 +393,7 @@ class sbifit(object):
                         "ntrain": len(self.x_train)
                         }
             )
+            sys.stdout = NewlineStdout(sys.stdout)
             p_x_y_estimator = anpe.train(training_batch_size=batch_size, use_combined_loss=True, validation_fraction=valfrac, 
                                          stop_after_epochs=stop_epochs, show_train_summary=True)
             # save trained NPE
