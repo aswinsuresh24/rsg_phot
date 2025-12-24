@@ -6,7 +6,7 @@ import sys
 import pickle
 import astropy.units as u
 import astropy.constants as const
-from scipy.stats import gaussian_kde
+from scipy.stats import gaussian_kde, skewnorm
 from scipy.optimize import curve_fit
 from scipy import interpolate
 import traceback
@@ -263,6 +263,77 @@ class sbifit(object):
 
         return train_err
     
+    def sim_skew_mag_err(self, train, noise_floor=0.01, interp_bins=30, sigma_f = 0.3):
+        erc_ = self.rsgloader.cols['errcols'][self.rsgloader.flt_mask]
+        mc_ = self.rsgloader.cols['magcols'][self.rsgloader.flt_mask]
+        tc_ = self.rsgloader.cols['flts'][self.rsgloader.flt_mask]
+        train_err = np.zeros((len(train), len(erc_)))
+
+        for i, (mcol, ecol, tcol) in enumerate(zip(mc_, erc_, tc_)):
+            mag, err = self.rsgloader.rsgcat[mcol].values - self.rsgloader.dm, self.rsgloader.rsgcat[ecol].values
+            tmag = train[tcol].values
+            mask = np.isnan(err) | (err > 1.0) | (mag > 36.0 - self.rsgloader.dm) | np.isnan(mag)
+            mag, err = mag[~mask], err[~mask]
+
+            vmin, vmax = np.percentile(mag, [0.1, 99.9]) 
+            mag_bins = np.linspace(vmin, vmax, interp_bins+1)
+
+            sig_edge = None
+            for j in range(interp_bins):
+                ebin_ = err[(mag >= mag_bins[j]) & (mag < mag_bins[j+1])]
+                if len(ebin_) < 30:
+                    sig_e = np.median(ebin_)
+                    mu_e = np.median(ebin_)
+                    ae = 0.0
+                else:
+                    ae, mu_e, sig_e = skewnorm.fit(ebin_)
+                
+                if j == interp_bins - 1:
+                    sig_edge = sig_e
+                tmask_ = (tmag >= mag_bins[j]) & (tmag < mag_bins[j+1])
+                tbin_ = tmag[tmask_]
+                resamp_err = skewnorm.rvs(ae, mu_e, sig_e, size=len(tbin_))
+                resamp_err = np.sqrt(resamp_err**2 + noise_floor**2)
+                train_err[:, i][tmask_] = resamp_err
+
+            bright_mask = tmag < vmin
+            bright_err = np.random.normal(0.0, 0.005, size=bright_mask.sum())
+            train_err[:, i][bright_mask] = np.sqrt(bright_err**2 + noise_floor**2)
+
+            faint_mask = tmag >= vmax + 0.5
+            faint_err = np.random.normal(sigma_f, sigma_f*0.1, size=faint_mask.sum())
+            train_err[:, i][faint_mask] = np.sqrt(faint_err**2 + noise_floor**2) 
+
+            transition_mask = (tmag >= vmax) & (tmag < vmax+0.5)
+            transition_mags = tmag[transition_mask]
+            w = np.clip(np.abs(transition_mags - vmax) / 0.5, a_min=None, a_max=1.0)
+            sig_t = (1 - w) * sig_edge + w * sigma_f
+            transition_err = np.random.normal(sig_t, 0.1*sig_t)
+            train_err[:, i][transition_mask] = np.sqrt(transition_err**2 + noise_floor**2)
+
+            train_err[:, i] = np.minimum(train_err[:, i], 0.6)
+
+        return train_err
+
+    
+    def toy_noise_model(self, train:pd.DataFrame, noise_floor:float=0.01, interp_bins:int=30, fit:bool=False):
+        """
+        toy Gaussian noise model for SBI++
+        
+        :param train: pd.DataFrame
+            training set
+        :param noise_floor: float, default=0.01
+            noise floor to be added in quadrature with
+            observed error
+        :param interp_bins: int, default=30
+            number of bins to interpolate mean and 1 sigma
+            scatter of error bars
+        :param fit: bool, default=False
+            fit to broken power law instead of interpolating?
+
+        """
+        raise NotImplementedError()
+    
     def sim_obs_noise(self, ymags, sim_type='chisq'):
         rsgcat = self.rsgloader.rsgcat
         noise_pdf = np.zeros_like(ymags.values)
@@ -290,19 +361,27 @@ class sbifit(object):
                 mu = np.average(offs[~mask], weights=weights)
                 sig = np.sqrt(np.average((offs[~mask] - mu)**2, weights=weights))
                 resamp_noise = np.random.normal(mu, sig, size=nsamp)
-                p16, p84 = np.percentile(resamp_noise, 16), np.percentile(resamp_noise, 84)
-                resamp_noise  = np.clip(resamp_noise, a_min=p16, a_max=p84) 
                 noise_pdf[:, i] = resamp_noise
 
         elif sim_type == 'random':
             self.logger.info(f'Adding simulator jitter using random Gaussian noise')
             for i in range(len(self.rsgloader.cols['magcols'][self.rsgloader.flt_mask])):
-                noise_pdf[:, i] = np.random.normal(0.0, 0.01, size=len(ymags))
+                noise_pdf[:, i] = np.random.normal(0.0, 0.1, size=len(ymags))
 
         ymags = ymags + noise_pdf
         return ymags
     
-    def augment_training_set(self, train, size=int(4e5)):
+    def augment_training_set(self, train, size=int(4e5), clip_bright=True):
+        if clip_bright:
+            train_mags = (self.rsgloader.rsgcat[self.rsgloader.cols['magcols'][self.rsgloader.flt_mask]] - self.rsgloader.dm)
+            max_mags = []
+            for i in train_mags.columns:
+                x_ = train_mags[i]
+                x_ = x_[(x_ > -15) & (x_ < 10)]
+                max_mags.append(np.percentile(x_, 1))
+            max_mags = np.array(max_mags)
+            clip_mask = (train[self.rsgloader.cols['flts'][self.rsgloader.flt_mask]] > max_mags).all(axis=1)
+            train = train[clip_mask]
         n = len(train)
         reps = int(np.ceil(size / n))
         self.logger.info(f'Augmenting training set my duplicating {reps} times and sampling {size} simulations')
@@ -330,7 +409,7 @@ class sbifit(object):
             self.logger.info(f'Training set does not exist; Will be saved at {load_train}')
             train = pd.read_csv(self.training_set_fname)
             if augment_train:
-                train = self.augment_training_set(train, augment_size)
+                train = self.augment_training_set(train, augment_size, clip_bright=True)
             train['temperature'] = train['temperature']/1e3
             train['dust_temp'] = train['dust_temp']/1e3
             mags = train[train.columns[ndim:]]
@@ -340,7 +419,7 @@ class sbifit(object):
             y_mags = mags[self.rsgloader.cols['flts'][self.rsgloader.flt_mask]]
             y_mags = self.sim_obs_noise(y_mags, sim_type='chisq')
             
-            train_err = self.sim_mag_err(train, noise_floor=noise_floor)
+            train_err = self.sim_skew_mag_err(train, noise_floor=noise_floor)
             y_err = pd.DataFrame(train_err, columns=self.rsgloader.cols['errcols'][self.rsgloader.flt_mask])
             y_phot = pd.concat([y_mags, y_err], axis=1)
             self.y_train = y_phot.to_numpy(dtype=np.float32)
