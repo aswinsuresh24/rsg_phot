@@ -9,8 +9,6 @@ import traceback
 import pandas as pd
 import itertools
 from tqdm import tqdm
-from rsg_phot.rsg_cat import save_photfiles
-from rsg_phot.mcmc import mcmc
 from multiprocessing import Pool
 import argparse
 import logging
@@ -18,6 +16,10 @@ import multiprocessing_logging
 from datetime import datetime
 import matplotlib.pyplot as plt
 import corner
+
+from rsg_phot.rsg_cat import save_photfiles
+from rsg_phot.mcmc import mcmc
+from rsg_phot.logger import logger
 
 def create_parser():
     '''
@@ -59,7 +61,7 @@ class rsg_dataloader(object):
         self.photfile_path = photfile_path
         self.backend_dir = os.path.join(self.procdir, 'backends')
         os.makedirs(self.backend_dir, exist_ok=True)
-        self.logger = self.getlogger()
+        self.logger = logger
 
         self.keep_narrow = keep_narrow
         if ignore_filts is None: ignore_filts = []
@@ -151,22 +153,6 @@ class rsg_dataloader(object):
         else:
             ign_mask = np.array([i.upper() in self.ignore_filts for i in self.cols['flts']])
             self.flt_mask = ~ign_mask
-    
-    def getlogger(self, logfile=None):
-        for handler in logging.root.handlers[:]:
-            logging.root.removeHandler(handler)
-
-        logging.basicConfig(level=logging.INFO,
-                            format='%(name)s [@ %(asctime)s] [l %(lineno)d] - %(levelname)s - %(message)s',
-                            datefmt='%a, %d %b %Y %H:%M:%S',
-                            filename= logfile,
-                            filemode='w')
-
-        console = logging.StreamHandler()
-        console.setLevel(logging.DEBUG)
-        logger = logging.getLogger("rsg_sedfit")
-        logger.addHandler(console)
-        return logger
 
     def mp_init(init_success: int = 0,
                 init_failed: int = 0,
@@ -551,7 +537,7 @@ class mcmcfit(object):
                 continue
 
         # create argument list for starmap async
-        multiprocessing_logging.install_mp_handler(self.rsgloader.logger)
+        multiprocessing_logging.install_mp_handler(self.logger)
         p = Pool(initializer=self.mp_init, processes=self.ncores)
         result = p.starmap_async(self.parallel_mc_worker, argument_list)
 

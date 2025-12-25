@@ -13,8 +13,6 @@ import traceback
 import pandas as pd
 import itertools
 from tqdm import tqdm
-from rsg_phot.mcmc import mcmc
-from rsg_phot.mc_parallel import rsg_dataloader, mcmcfit
 from multiprocessing import Pool
 import argparse
 import logging
@@ -31,6 +29,9 @@ from sbi.utils import MultipleIndependent, BoxUniform
 import rsg_phot.sbi_pp as sbi_pp
 import signal
 import trackio
+
+from rsg_phot.mcmc import mcmc
+from rsg_phot.mc_parallel import rsg_dataloader
 
 def create_parser():
     '''
@@ -62,7 +63,9 @@ def create_parser():
     parser.add_argument('--device', type=str, default='cpu', help='Device for PyTorch (CPU / GPU)')
     parser.add_argument('--sim_train', default=False, action=argparse.BooleanOptionalAction, help='Generate training set samples?')
     parser.add_argument('--ntrain', type=float, default=4e5, help='Number of samples in simulated training set')
-    parser.add_argument('--aug_train', type=float, default=None, help='Number of samples in final training set')
+    parser.add_argument('--aug_train', default=False, action=argparse.BooleanOptionalAction, help='Augment training set?')
+    parser.add_argument('--clip_bright', default=False, action=argparse.BooleanOptionalAction, help='Clip ultra-bright sources from training set?')
+    parser.add_argument('--aug_size', type=float, default=4e5, help='Number of samples in augmented training set')
     parser.add_argument('--flow_model', type=str, default='nsf', help='Flow model for neural posterior estimation (nsf / maf / mdn)')
     parser.add_argument('--hidden_features', type=int, default=50, help='Number of hidden features')
     parser.add_argument('--ntransforms', type=int, default=5, help='Number of transforms in normalizing flow')
@@ -354,12 +357,14 @@ class sbifit(object):
                 off_mags[i, :] = (obsmag - model_mag).values
 
             nsamp = len(ymags)
-            resmask = (off_mags > 1).any(axis=1)
-            off_mags_clip = off_mags[~resmask]
-            corr_kde = gaussian_kde(off_mags_clip.T)
-            resamp_noise = corr_kde.resample(size=nsamp)
-            resamp_noise = np.clip(resamp_noise, a_min = -1, a_max = 1)
-            noise_pdf = resamp_noise.T
+            for i, offs in enumerate(off_mags.T):
+                mask = np.abs(offs) > 1
+                weights = (1/rsgcat['chimin'].values[~mask]) / np.sum(1/rsgcat['chimin'].values[~mask])
+
+                mu = np.average(offs[~mask], weights=weights)
+                sig = np.sqrt(np.average((offs[~mask] - mu)**2, weights=weights))
+                resamp_noise = np.random.normal(mu, sig, size=nsamp)
+                noise_pdf[:, i] = resamp_noise
 
         elif sim_type == 'random':
             self.logger.info(f'Adding simulator jitter using random Gaussian noise')
@@ -392,9 +397,9 @@ class sbifit(object):
 
         return aug
 
-    def baseline_sbi_model(self, prior_type='independent', augment_train=True, augment_size=int(5e5), 
-                           flow_model='nsf', hidden_features=15, ntransforms=3, nbins=10, batch_size=256, 
-                           valfrac=0.1, stop_epochs=50, noise_floor=0.01, savepath=None):
+    def baseline_sbi_model(self, prior_type='independent', augment_train=False, augment_size=int(4e5), 
+                           clip_bright=False, flow_model='nsf', hidden_features=15, ntransforms=3, nbins=10,
+                           batch_size=256, valfrac=0.1, stop_epochs=50, noise_floor=0.01, savepath=None):
         assert self.rsgloader.rsgcat is not None
 
         ndim = int(len(self.gen_mc_obj.model_fit_params))
@@ -409,7 +414,8 @@ class sbifit(object):
         else:
             self.logger.info(f'Training set does not exist; Will be saved at {load_train}')
             train = pd.read_csv(self.training_set_fname)
-            # train = self.clip_bright_train_samples(train)
+            if clip_bright:
+                train = self.clip_bright_train_samples(train)
             if augment_train:
                 train = self.augment_training_set(train, augment_size)
             train['temperature'] = train['temperature']/1e3
@@ -444,7 +450,7 @@ class sbifit(object):
                                      high=torch.Tensor([prior_high[2]]), device=self.device),
                 BoxUniform(low=torch.tensor([prior_low[3]]), high=torch.tensor([prior_high[3]]), device=self.device),
                 BoxUniform(low=torch.tensor([prior_low[4]]), high=torch.tensor([prior_high[4]]), device=self.device),
-                TruncatedExponential(rate=torch.tensor([1.0]), low=torch.Tensor([prior_low[5]]), 
+                TruncatedExponential(rate=torch.tensor([0.5]), low=torch.Tensor([prior_low[5]]), 
                                      high=torch.Tensor([prior_high[5]]), device=self.device),
             ])
         else:
@@ -543,13 +549,6 @@ if __name__ == '__main__':
         sedfit.sim_training_set(ntrain=int(args.ntrain))
         sys.exit()
 
-    if (args.aug_train is not None) and (isinstance(args.aug_train, int) | isinstance(args.aug_train, float)):
-        augment_train = True
-        augment_size = int(args.aug_train)
-    else:
-        augment_train = False
-        augment_size = int(3e5) # won't be used
-
-    hatp_x_y = sedfit.baseline_sbi_model(prior_type='independent', augment_train=augment_train, augment_size=augment_size,
-                                         flow_model=args.flow_model, hidden_features=args.hidden_features, ntransforms=args.ntransforms, 
-                                         nbins=args.nbins, batch_size=256, valfrac=0.1, stop_epochs=50)
+    hatp_x_y = sedfit.baseline_sbi_model(prior_type='independent', augment_train=args.aug_train, augment_size=args.aug_size, 
+                                         clip_bright=args.clip_bright, flow_model=args.flow_model, hidden_features=args.hidden_features, 
+                                         ntransforms=args.ntransforms, nbins=args.nbins, batch_size=256, valfrac=0.1, stop_epochs=50)
