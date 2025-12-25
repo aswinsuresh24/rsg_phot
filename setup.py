@@ -19,7 +19,8 @@ setup(
         'progressbar2',
         'synphot',
         'scipy',
-        'corner',        
+        'corner',
+        'trackio'        
     ],
     author='Aswin Suresh',
 

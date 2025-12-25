@@ -354,14 +354,12 @@ class sbifit(object):
                 off_mags[i, :] = (obsmag - model_mag).values
 
             nsamp = len(ymags)
-            for i, offs in enumerate(off_mags.T):
-                mask = np.abs(offs) > 1
-                weights = (1/rsgcat['chimin'].values[~mask]) / np.sum(1/rsgcat['chimin'].values[~mask])
-
-                mu = np.average(offs[~mask], weights=weights)
-                sig = np.sqrt(np.average((offs[~mask] - mu)**2, weights=weights))
-                resamp_noise = np.random.normal(mu, sig, size=nsamp)
-                noise_pdf[:, i] = resamp_noise
+            resmask = (off_mags > 1).any(axis=1)
+            off_mags_clip = off_mags[~resmask]
+            corr_kde = gaussian_kde(off_mags_clip.T)
+            resamp_noise = corr_kde.resample(size=nsamp)
+            resamp_noise = np.clip(resamp_noise, a_min = -1, a_max = 1)
+            noise_pdf = resamp_noise.T
 
         elif sim_type == 'random':
             self.logger.info(f'Adding simulator jitter using random Gaussian noise')
@@ -371,20 +369,24 @@ class sbifit(object):
         ymags = ymags + noise_pdf
         return ymags
     
-    def augment_training_set(self, train, size=int(4e5), clip_bright=True):
-        if clip_bright:
-            train_mags = (self.rsgloader.rsgcat[self.rsgloader.cols['magcols'][self.rsgloader.flt_mask]] - self.rsgloader.dm)
-            max_mags = []
-            for i in train_mags.columns:
-                x_ = train_mags[i]
-                x_ = x_[(x_ > -15) & (x_ < 10)]
-                max_mags.append(np.percentile(x_, 1))
-            max_mags = np.array(max_mags)
-            clip_mask = (train[self.rsgloader.cols['flts'][self.rsgloader.flt_mask]] > max_mags).all(axis=1)
-            train = train[clip_mask]
+    def clip_bright_train_samples(self, train):
+        train_mags = (self.rsgloader.rsgcat[self.rsgloader.cols['magcols'][self.rsgloader.flt_mask]] - self.rsgloader.dm)
+        max_mags = []
+        for i in train_mags.columns:
+            x_ = train_mags[i]
+            x_ = x_[(x_ > -15) & (x_ < 10)]
+            max_mags.append(np.percentile(x_, 1))
+        max_mags = np.array(max_mags)
+        clip_mask = (train[self.rsgloader.cols['flts'][self.rsgloader.flt_mask]] > max_mags).all(axis=1)
+        train = train[clip_mask]
+        self.logger.info(f'Clipped bright sources in training set, to size {len(train)}')
+
+        return train
+    
+    def augment_training_set(self, train, size=int(4e5)):
         n = len(train)
         reps = int(np.ceil(size / n))
-        self.logger.info(f'Augmenting training set my duplicating {reps} times and sampling {size} simulations')
+        self.logger.info(f'Augmenting training set by duplicating {reps} times and sampling {size} simulations')
         aug = pd.concat([train] * reps, ignore_index=True)
         aug = aug.sample(n=size, replace=False).reset_index(drop=True)
 
@@ -397,7 +399,6 @@ class sbifit(object):
 
         ndim = int(len(self.gen_mc_obj.model_fit_params))
         load_train = os.path.join(self.procdir, f'train_{self.rsgloader.gal}.csv')
-        # load_train = os.path.join(self.procdir, f'train_{flow_model}_{hidden_features}_{ntransforms}_{nbins}.csv')
         if os.path.exists(load_train):
             self.logger.info(f'Training set exists; Loading x and y train from {load_train}')
             train_set = pd.read_csv(load_train)
@@ -408,8 +409,9 @@ class sbifit(object):
         else:
             self.logger.info(f'Training set does not exist; Will be saved at {load_train}')
             train = pd.read_csv(self.training_set_fname)
+            # train = self.clip_bright_train_samples(train)
             if augment_train:
-                train = self.augment_training_set(train, augment_size, clip_bright=True)
+                train = self.augment_training_set(train, augment_size)
             train['temperature'] = train['temperature']/1e3
             train['dust_temp'] = train['dust_temp']/1e3
             mags = train[train.columns[ndim:]]
@@ -546,7 +548,7 @@ if __name__ == '__main__':
         augment_size = int(args.aug_train)
     else:
         augment_train = False
-        augment_size = int(5e5) # won't be used
+        augment_size = int(3e5) # won't be used
 
     hatp_x_y = sedfit.baseline_sbi_model(prior_type='independent', augment_train=augment_train, augment_size=augment_size,
                                          flow_model=args.flow_model, hidden_features=args.hidden_features, ntransforms=args.ntransforms, 
