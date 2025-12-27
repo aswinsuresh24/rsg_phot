@@ -32,6 +32,7 @@ import trackio
 
 from rsg_phot.mcmc import mcmc
 from rsg_phot.mc_parallel import rsg_dataloader
+from rsg_phot.utils import NewlineStdout
 
 def create_parser():
     '''
@@ -72,18 +73,6 @@ def create_parser():
     parser.add_argument('--nbins', type=int, default=10, help='Number of bins for spline flow (only for nsf)')
 
     return parser
-
-
-class NewlineStdout:
-    def __init__(self, stream):
-        self.stream = stream
-
-    def write(self, msg):
-        self.stream.write(msg.replace('\r', '\n'))
-        self.stream.flush()
-
-    def flush(self):
-        self.stream.flush()
 
 
 class TruncatedExponential(torch.distributions.Distribution):
@@ -397,7 +386,7 @@ class sbifit(object):
 
         return aug
 
-    def baseline_sbi_model(self, prior_type='independent', augment_train=False, augment_size=int(4e5), 
+    def baseline_sbi_model(self, prior_type='independent', augment_train=False, augment_size=int(3e5), 
                            clip_bright=False, flow_model='nsf', hidden_features=15, ntransforms=3, nbins=10,
                            batch_size=256, valfrac=0.1, stop_epochs=50, noise_floor=0.01, savepath=None):
         assert self.rsgloader.rsgcat is not None
@@ -470,18 +459,18 @@ class sbifit(object):
             self.logger.info('No trained model found. Training NPE...')
             # start experiment tracking 
             trackio.init(project="jwst-rsg-sbi",
-                config={"flow_model":flow_model,
-                        "hidden_features":hidden_features,
-                        "ntransforms": ntransforms,
-                        "nbins_nsf": nbins,
-                        "batch_size": batch_size,
-                        "patience": stop_epochs,
-                        "lr": 5e-4,
-                        "ntrain": len(self.x_train)
-                        }
-            )
+                         config={"flow_model":flow_model,
+                                 "hidden_features":hidden_features,
+                                 "ntransforms": ntransforms,
+                                 "nbins_nsf": nbins,
+                                 "batch_size": batch_size,
+                                 "patience": stop_epochs,
+                                 "lr": 5e-4,
+                                 "ntrain": len(self.x_train)
+                                }
+                        )
             sys.stdout = NewlineStdout(sys.stdout)
-            p_x_y_estimator = anpe.train(training_batch_size=batch_size, use_combined_loss=True, validation_fraction=valfrac, 
+            p_x_y_estimator = anpe.train(training_batch_size=batch_size, use_combined_loss=False, validation_fraction=valfrac, 
                                          stop_after_epochs=stop_epochs, show_train_summary=True)
             # save trained NPE
             torch.save(p_x_y_estimator.state_dict(), savepath)
@@ -551,4 +540,4 @@ if __name__ == '__main__':
 
     hatp_x_y = sedfit.baseline_sbi_model(prior_type='independent', augment_train=args.aug_train, augment_size=args.aug_size, 
                                          clip_bright=args.clip_bright, flow_model=args.flow_model, hidden_features=args.hidden_features, 
-                                         ntransforms=args.ntransforms, nbins=args.nbins, batch_size=256, valfrac=0.1, stop_epochs=50)
+                                         ntransforms=args.ntransforms, nbins=args.nbins, batch_size=256, valfrac=0.1, stop_epochs=20)

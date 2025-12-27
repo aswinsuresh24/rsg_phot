@@ -1,5 +1,17 @@
 import logging
 
+class NewlineStdout:
+    def __init__(self, stream):
+        self.stream = stream
+
+    def write(self, msg):
+        self.stream.write(msg.replace('\r', '\n'))
+        self.stream.flush()
+
+    def flush(self):
+        self.stream.flush()
+
+
 def getlogger(logfile=None):
     for handler in logging.root.handlers[:]:
         logging.root.removeHandler(handler)

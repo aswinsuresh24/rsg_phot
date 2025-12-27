@@ -19,7 +19,7 @@ import corner
 
 from rsg_phot.rsg_cat import save_photfiles
 from rsg_phot.mcmc import mcmc
-from rsg_phot.logger import logger
+from rsg_phot.utils import logger
 
 def create_parser():
     '''
