@@ -26,6 +26,11 @@ from sbi.neural_nets import posterior_nn
 from sbi.analysis import plot_summary
 from torch.distributions import Exponential, LogNormal
 from sbi.utils import MultipleIndependent, BoxUniform
+from sbi.analysis.plot import sbc_rank_plot, plot_tarp
+from sbi.diagnostics import check_sbc, check_tarp, run_sbc, run_tarp
+from sklearn.metrics import r2_score
+from sklearn.metrics import root_mean_squared_error as rmse
+import matplotlib.pyplot as plt
 import rsg_phot.sbi_pp as sbi_pp
 import signal
 import trackio
@@ -274,11 +279,17 @@ class sbifit(object):
             for j in range(interp_bins):
                 ebin_ = err[(mag >= mag_bins[j]) & (mag < mag_bins[j+1])]
                 if len(ebin_) < 30:
-                    sig_e = np.median(ebin_)
+                    sig_e = np.std(ebin_, ddof=1)
                     mu_e = np.median(ebin_)
                     ae = 0.0
                 else:
-                    ae, mu_e, sig_e = skewnorm.fit(ebin_)
+                    try:
+                        ae, mu_e, sig_e = skewnorm.fit(ebin_)
+                    except Exception as e:
+                        traceback.format_exc()
+                        sig_e = np.std(ebin_, ddof=1)
+                        mu_e = np.median(ebin_)
+                        ae = 0.0
                 
                 if j == interp_bins - 1:
                     sig_edge = sig_e
@@ -347,12 +358,13 @@ class sbifit(object):
 
             nsamp = len(ymags)
             for i, offs in enumerate(off_mags.T):
-                mask = np.abs(offs) > 1
-                weights = (1/rsgcat['chimin'].values[~mask]) / np.sum(1/rsgcat['chimin'].values[~mask])
-
-                mu = np.average(offs[~mask], weights=weights)
-                sig = np.sqrt(np.average((offs[~mask] - mu)**2, weights=weights))
-                resamp_noise = np.random.normal(mu, sig, size=nsamp)
+                mask = (np.abs(offs) > 1) | np.isnan(offs) | np.isinf(offs)
+                try:
+                    ae, mu_e, sig_e = skewnorm.fit(offs[~mask])
+                    resamp_noise = skewnorm.rvs(ae, mu_e, sig_e, size=nsamp)
+                except:
+                    mu, sig = np.mean(offs[~mask]), np.std(offs[~mask], ddof=1)
+                    resamp_noise = np.random.normal(mu, sig, size=nsamp)
                 noise_pdf[:, i] = resamp_noise
 
         elif sim_type == 'random':
@@ -492,6 +504,7 @@ class sbifit(object):
         p_x_y_estimator.load_state_dict(torch.load(savepath, map_location=torch.device(self.device)))
         anpe._x_shape = sbi_utils.x_shape_from_simulation(y_tensor)
         hatp_x_y = anpe.build_posterior(p_x_y_estimator)
+        self.hatp_x_y = hatp_x_y
 
         return hatp_x_y
         
@@ -512,7 +525,121 @@ class sbifit(object):
             if reset_handler: signal.signal(signal.SIGALRM, cur_handler) 
         return result
     
-    def infer_sbi(self):
+    def simulator(self, theta_in):
+        theta_in[:, 0] = theta_in[:, 0]*1e3
+        theta_in[:, 1] = theta_in[:, 1]*1e3
+        out = np.zeros((len(theta_in), len(self.rsgloader.cols['flts'][self.rsgloader.flt_mask])))
+
+        for i, theta in enumerate(theta_in):
+            model_mag = np.array([self.gen_mc_obj.model[f](theta).flatten()[0] for f in self.rsgloader.cols['flts'][self.rsgloader.flt_mask]]) + self.gen_mc_obj.dm
+            out[i, :] = model_mag
+
+        outdf = pd.DataFrame(out, columns=self.rsgloader.cols['flts'][self.rsgloader.flt_mask])
+        noise = self.sim_skew_mag_err(outdf) 
+
+        out = np.hstack((out, noise))
+        out = torch.as_tensor(out.astype(np.float32)).to('cpu')
+        return out
+    
+    def run_sbc_tarp(self, num_sbc_samples=500, num_posterior_samples=2500, num_workers=1):
+        # generate ground truth parameters and corresponding simulated observations for SBC.
+        thetas = self.prior.sample((num_sbc_samples,))
+        self.logger.info(f'Running SBC on {len(thetas)} samples')
+        xs = self.simulator(thetas.clone().detach())
+
+        ranks, dap_samples = run_sbc(
+            thetas,
+            xs,
+            self.hatp_x_y,
+            num_posterior_samples=num_posterior_samples,
+            num_workers=num_workers,
+            use_sample_batched=False,  # True can give a speed-up, but might cause memory issues.
+        )
+
+        check_stats = check_sbc(
+            ranks, thetas, dap_samples, num_posterior_samples=num_posterior_samples
+        )
+
+        self.logger.info("SBC ks pval")
+        self.logger.info(check_stats)
+
+        f, ax = sbc_rank_plot(
+            ranks=ranks,
+            num_posterior_samples=num_posterior_samples,
+            plot_type="hist",
+            num_bins=None,  # by passing None we use a heuristic for the number of bins.
+            parameter_labels=self.gen_mc_obj.model_fit_params,
+        )
+        plt.show()
+
+        f, ax = sbc_rank_plot(ranks, num_posterior_samples, plot_type="cdf", parameter_labels=self.gen_mc_obj.model_fit_params)
+        plt.show()
+
+        #TARP
+        ecp, alpha = run_tarp(
+            thetas,
+            xs,
+            self.hatp_x_y,
+            references=None,  # will be calculated automatically.
+            num_posterior_samples=2500,
+        )
+
+        atc, ks_pval = check_tarp(ecp, alpha)
+        self.logger.info("TARP ATC (should be close to 0)")
+        self.logger.info(atc)
+        self.logger.info("TARP ks pval (should be larger than 0.05)")
+        self.logger.info(ks_pval)
+
+        plot_tarp(ecp, alpha);
+        plt.show()
+
+    def test_accuracy(self, nsamp=1000, num_posterior_samples=2500):
+        thetas = self.prior.sample((nsamp,))
+        self.logger.info(f'Test accuracy using {len(thetas)} samples')
+        xs = self.simulator(thetas.clone().detach())
+
+        truths = []
+        est = []
+        err16, err84 = [], []
+        for idx in tqdm(range(nsamp)):
+            i = xs[idx]
+            self.hatp_x_y.set_default_x(i)
+            samp = self.hatp_x_y.sample((num_posterior_samples,), show_progress_bars=False)
+            lp = self.hatp_x_y.log_prob(samp)
+            samp = samp[lp > torch.quantile(lp, 0.1)]
+            samp = samp.numpy()
+            med = np.median(samp, axis=0)
+            p16, p84 = np.percentile(samp, 16, axis=0), np.percentile(samp, 84, axis=0)
+            truths.append(thetas[idx])
+            est.append(med)
+            err16.append(p16); err84.append(p84)
+
+        truths = np.array(truths)
+        est = np.array(est)
+        err16 = np.array(err16)
+        err84 = np.array(err84)
+
+        fig, axes = plt.subplots(2, 3, figsize=(15, 10))
+        labels = self.gen_mc_obj.model_fit_params
+        for i in range(6):  
+            ax = axes.flatten()[i]
+            ax.errorbar(truths[:, i], est[:, i], yerr=[est[:, i]-err16[:, i], err84[:, i]-est[:, i]], fmt='o', 
+                        ecolor='gray', alpha=0.5, label='Estimated', markersize=4)
+            ax.scatter(truths[:, i], truths[:, i], color='red', label='Truth', s=10)
+            ax.plot([truths[:, i].min(), truths[:, i].max()], [truths[:, i].min(), truths[:, i].max()], 
+                    ls='--', color='black', alpha=0.7)
+            r2, rms = r2_score(truths[:, i], est[:, i]), rmse(truths[:, i], est[:, i])
+            ax.annotate(f'R2: {r2:.3f}\nRMSE: {rms:.3f}', xy=(0.7, 0.05), xycoords='axes fraction')
+            ax.set_xlabel('Simulated ' + labels[i])
+            ax.set_ylabel('Estimated ' + labels[i])
+            ax.legend(loc='upper left')
+
+    def run_calibration(self, num_sbc_samples=500, num_posterior_samples=2500, num_workers=1, num_test_samples=1000):
+        self.run_sbc_tarp(num_sbc_samples=num_sbc_samples, num_posterior_samples=num_posterior_samples,
+                          num_workers=num_workers)
+        self.test_accuracy(nsamp=num_test_samples, num_posterior_samples=num_posterior_samples)
+    
+    def infer(self):
         raise NotImplementedError()
 
 if __name__ == '__main__':
