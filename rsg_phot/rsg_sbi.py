@@ -344,17 +344,21 @@ class sbifit(object):
             self.logger.info(f'Adding simulator jitter based on chi sq values')
             off_mags = np.zeros_like(rsgcat[self.rsgloader.cols['magcols'][self.rsgloader.flt_mask]].values)
             for i, idx in enumerate(rsgcat.index):
-                d = 0.0
-                row = rsgcat.loc[idx]
-                obsmag = row[self.rsgloader.cols['magcols'][self.rsgloader.flt_mask]]
-                t_, td_, l_, tu_, a_ = row['teff_chisq'], row['tdust_chisq'], np.log10(row['lum_chisq']), row['tau_chisq'], row['av_chisq']
-                if l_ > 6.0: 
-                    d = l_ - 6.0
-                    l_ = 6.0
-                chisq_params = np.meshgrid([t_, td_, tu_, l_, 3.1, a_], indexing='ij', sparse=True)
-                model_mag = np.array([self.rsgloader.gen_mc_obj.model[f](chisq_params).flatten()[0] for f in self.rsgloader.cols['flts'][self.rsgloader.flt_mask]]) + self.rsgloader.gen_mc_obj.dm
-                model_mag = model_mag - 2.5*d
-                off_mags[i, :] = (obsmag - model_mag).values
+                try:
+                    d = 0.0
+                    row = rsgcat.loc[idx]
+                    obsmag = row[self.rsgloader.cols['magcols'][self.rsgloader.flt_mask]]
+                    t_, td_, l_, tu_, a_ = row['teff_chisq'], row['tdust_chisq'], np.log10(row['lum_chisq']), row['tau_chisq'], row['av_chisq']
+                    if l_ > 6.0: 
+                        d = l_ - 6.0
+                        l_ = 6.0
+                    chisq_params = np.meshgrid([t_, td_, tu_, l_, 3.1, a_], indexing='ij', sparse=True)
+                    model_mag = np.array([self.rsgloader.gen_mc_obj.model[f](chisq_params).flatten()[0] for f in self.rsgloader.cols['flts'][self.rsgloader.flt_mask]]) + self.rsgloader.gen_mc_obj.dm
+                    model_mag = model_mag - 2.5*d
+                    off_mags[i, :] = (obsmag - model_mag).values
+                except:
+                    traceback.format_exc()
+                    off_mags[i, :] = 90.0
 
             nsamp = len(ymags)
             for i, offs in enumerate(off_mags.T):
