@@ -255,7 +255,7 @@ class sbifit(object):
 
             norm_err = np.random.normal(mean_train_errs, sig_train_errs)
             norm_err = np.sqrt(norm_err**2 + noise_floor**2)
-            norm_err[tmag > max(mag)] = mu_interp(max(mag))
+            # norm_err[tmag > max(mag)] = mu_interp(max(mag))
             train_err[:, i] = norm_err
 
         return train_err
@@ -286,7 +286,7 @@ class sbifit(object):
                     try:
                         ae, mu_e, sig_e = skewnorm.fit(ebin_)
                     except Exception as e:
-                        traceback.format_exc()
+                        self.logger.info(traceback.format_exc())
                         sig_e = np.std(ebin_, ddof=1)
                         mu_e = np.median(ebin_)
                         ae = 0.0
@@ -357,7 +357,7 @@ class sbifit(object):
                     model_mag = model_mag - 2.5*d
                     off_mags[i, :] = (obsmag - model_mag).values
                 except:
-                    traceback.format_exc()
+                    self.logger.info(traceback.format_exc())
                     off_mags[i, :] = 90.0
 
             nsamp = len(ymags)
@@ -432,7 +432,13 @@ class sbifit(object):
             y_mags = mags[self.rsgloader.cols['flts'][self.rsgloader.flt_mask]]
             y_mags = self.sim_obs_noise(y_mags, sim_type='chisq')
             
-            train_err = self.sim_skew_mag_err(train, noise_floor=noise_floor)
+            try:
+                self.logger.info('Modeling magnitude dependent noise using skewnorm distributions')
+                train_err = self.sim_skew_mag_err(train, noise_floor=noise_floor)
+            except Exception as e:
+                self.logger.info(traceback.format_exc())
+                self.logger.info('Modeling magnitude dependent noise using splines')
+                train_err = self.sim_mag_err(train, noise_floor=noise_floor, interp_bins=30)
             y_err = pd.DataFrame(train_err, columns=self.rsgloader.cols['errcols'][self.rsgloader.flt_mask])
             y_phot = pd.concat([y_mags, y_err], axis=1)
             self.y_train = y_phot.to_numpy(dtype=np.float32)
