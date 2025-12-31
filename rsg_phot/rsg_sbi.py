@@ -285,6 +285,8 @@ class sbifit(object):
                 else:
                     try:
                         ae, mu_e, sig_e = skewnorm.fit(ebin_)
+                        if (ae < 0.0) | (mu_e < 0.0) | (sig_e < 0.0):
+                            ae, mu_e, sig_e = 0.0, np.median(ebin_), np.std(ebin_, ddof=1)
                     except Exception as e:
                         self.logger.info(traceback.format_exc())
                         sig_e = np.std(ebin_, ddof=1)
@@ -365,6 +367,8 @@ class sbifit(object):
                 mask = (np.abs(offs) > 1) | np.isnan(offs) | np.isinf(offs)
                 try:
                     ae, mu_e, sig_e = skewnorm.fit(offs[~mask])
+                    if (ae < 0.0) | (mu_e < 0.0) | (sig_e < 0.0):
+                        ae, mu_e, sig_e = 0.0, np.median(offs[~mask]), np.std(offs[~mask], ddof=1)
                     resamp_noise = skewnorm.rvs(ae, mu_e, sig_e, size=nsamp)
                 except:
                     mu, sig = np.mean(offs[~mask]), np.std(offs[~mask], ddof=1)
