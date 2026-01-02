@@ -276,11 +276,6 @@ class sbifit(object):
             mask = np.isnan(err) | (err > 1.0) | (mag > 36.0 - self.rsgloader.dm) | np.isnan(mag)
             mag, err = mag[~mask], err[~mask]
 
-            tmask_ = (tmag >= mag_bins[j]) & (tmag < mag_bins[j+1])
-            if tmask_.sum() == 0:
-                continue
-            tbin_ = tmag[tmask_]
-
             vmin, vmax = np.percentile(mag, [0.1, 99.9]) 
             mag_bins = np.linspace(vmin, vmax, interp_bins+1)
 
@@ -288,6 +283,10 @@ class sbifit(object):
             for j in range(interp_bins):
                 #BUG: if len(ebin_) == 0, this doesn't work
                 ebin_ = err[(mag >= mag_bins[j]) & (mag < mag_bins[j+1])]
+                tmask_ = (tmag >= mag_bins[j]) & (tmag < mag_bins[j+1])
+                if tmask_.sum() == 0:
+                    continue
+                tbin_ = tmag[tmask_]
                 if len(ebin_) < 30:
                     sig_e = np.std(ebin_, ddof=1)
                     mu_e = np.median(ebin_)
@@ -305,8 +304,7 @@ class sbifit(object):
                 
                 if j == interp_bins - 1:
                     sig_edge = sig_e
-                tmask_ = (tmag >= mag_bins[j]) & (tmag < mag_bins[j+1])
-                tbin_ = tmag[tmask_]
+
                 resamp_err = skewnorm.rvs(ae, mu_e, sig_e, size=len(tbin_))
                 resamp_err = np.sqrt(resamp_err**2 + noise_floor**2)
                 train_err[:, i][tmask_] = resamp_err
@@ -368,8 +366,8 @@ class sbifit(object):
                     model_mag = np.array([self.rsgloader.gen_mc_obj.model[f](chisq_params).flatten()[0] for f in self.rsgloader.cols['flts'][self.rsgloader.flt_mask]]) + self.rsgloader.gen_mc_obj.dm
                     model_mag = model_mag - 2.5*d
                     off_mags[i, :] = (obsmag - model_mag).values
-                except:
-                    self.logger.info(traceback.format_exc())
+                except Exception as e:
+                    self.logger.info(e)
                     off_mags[i, :] = 90.0
 
             nsamp = len(ymags)
