@@ -34,6 +34,7 @@ import matplotlib.pyplot as plt
 import rsg_phot.sbi_pp as sbi_pp
 import signal
 import trackio
+import json, hashlib
 
 from rsg_phot.mcmc import mcmc
 from rsg_phot.mc_parallel import rsg_dataloader
@@ -68,14 +69,16 @@ def create_parser():
     # SBI model arguments
     parser.add_argument('--device', type=str, default='cpu', help='Device for PyTorch (CPU / GPU)')
     parser.add_argument('--sim_train', default=False, action=argparse.BooleanOptionalAction, help='Generate training set samples?')
-    parser.add_argument('--ntrain', type=float, default=4e5, help='Number of samples in simulated training set')
+    parser.add_argument('--ntrain', type=int, default=int(4e5), help='Number of samples in simulated training set')
     parser.add_argument('--aug_train', default=False, action=argparse.BooleanOptionalAction, help='Augment training set?')
     parser.add_argument('--clip_bright', default=False, action=argparse.BooleanOptionalAction, help='Clip ultra-bright sources from training set?')
-    parser.add_argument('--aug_size', type=float, default=4e5, help='Number of samples in augmented training set')
+    parser.add_argument('--aug_size', type=int, default=int(4e5), help='Number of samples in augmented training set')
     parser.add_argument('--flow_model', type=str, default='nsf', help='Flow model for neural posterior estimation (nsf / maf / mdn)')
     parser.add_argument('--hidden_features', type=int, default=50, help='Number of hidden features')
     parser.add_argument('--ntransforms', type=int, default=5, help='Number of transforms in normalizing flow')
     parser.add_argument('--nbins', type=int, default=10, help='Number of bins for spline flow (only for nsf)')
+    parser.add_argument('--batch_size', type=int, default=256, help='Batch size for the SBI neural net')
+    parser.add_argument('--stop_epochs', type=int, default=50, help='Patience epochs for SBI training')
 
     return parser
 
@@ -244,6 +247,7 @@ class sbifit(object):
 
             vmin, vmax = np.percentile(mag, [0.3, 99.7]) 
             mag_bins = np.linspace(vmin, vmax, interp_bins+1)
+            #BUG: if any bin in interp_bins is empty, this doesn't work
             bin_centers = 0.5 * (mag_bins[1:] + mag_bins[:-1])
             std_errs = np.array([np.std(err[(mag >= mag_bins[j]) & (mag < mag_bins[j+1])], ddof=1) for j in range(interp_bins)])
             mu_errs = np.array([np.mean(err[(mag >= mag_bins[j]) & (mag < mag_bins[j+1])]) for j in range(interp_bins)])
@@ -272,11 +276,17 @@ class sbifit(object):
             mask = np.isnan(err) | (err > 1.0) | (mag > 36.0 - self.rsgloader.dm) | np.isnan(mag)
             mag, err = mag[~mask], err[~mask]
 
+            tmask_ = (tmag >= mag_bins[j]) & (tmag < mag_bins[j+1])
+            if tmask_.sum() == 0:
+                continue
+            tbin_ = tmag[tmask_]
+
             vmin, vmax = np.percentile(mag, [0.1, 99.9]) 
             mag_bins = np.linspace(vmin, vmax, interp_bins+1)
 
             sig_edge = None
             for j in range(interp_bins):
+                #BUG: if len(ebin_) == 0, this doesn't work
                 ebin_ = err[(mag >= mag_bins[j]) & (mag < mag_bins[j+1])]
                 if len(ebin_) < 30:
                     sig_e = np.std(ebin_, ddof=1)
@@ -405,6 +415,11 @@ class sbifit(object):
         aug = aug.sample(n=size, replace=False).reset_index(drop=True)
 
         return aug
+    
+    def model_id_from_config(self, config: dict, n_chars=8):
+        config_str = json.dumps(config, sort_keys=True)
+        h = hashlib.sha1(config_str.encode()).hexdigest()
+        return h[:n_chars]
 
     def baseline_sbi_model(self, prior_type='independent', augment_train=False, augment_size=int(3e5), 
                            clip_bright=False, flow_model='nsf', hidden_features=15, ntransforms=3, nbins=10,
@@ -412,7 +427,10 @@ class sbifit(object):
         assert self.rsgloader.rsgcat is not None
 
         ndim = int(len(self.gen_mc_obj.model_fit_params))
-        load_train = os.path.join(self.procdir, f'train_{self.rsgloader.gal}.csv')
+        if augment_train:
+            load_train = os.path.join(self.procdir, f'train_{self.rsgloader.gal}_aug.csv')
+        else:
+            load_train = os.path.join(self.procdir, f'train_{self.rsgloader.gal}.csv')
         if os.path.exists(load_train):
             self.logger.info(f'Training set exists; Loading x and y train from {load_train}')
             train_set = pd.read_csv(load_train)
@@ -438,7 +456,7 @@ class sbifit(object):
             
             try:
                 self.logger.info('Modeling magnitude dependent noise using skewnorm distributions')
-                train_err = self.sim_skew_mag_err(train, noise_floor=noise_floor)
+                train_err = self.sim_skew_mag_err(train, noise_floor=noise_floor, interp_bins=30)
             except Exception as e:
                 self.logger.info(traceback.format_exc())
                 self.logger.info('Modeling magnitude dependent noise using splines')
@@ -500,7 +518,7 @@ class sbifit(object):
                                          stop_after_epochs=stop_epochs, show_train_summary=True)
             # save trained NPE
             torch.save(p_x_y_estimator.state_dict(), savepath)
-            pickle.dump(anpe._summary, open(os.path.join(self.procdir, f'npe_{flow_model}_{hidden_features}_{ntransforms}_{nbins}.p'), 'wb'))
+            pickle.dump(anpe._summary, open(savepath.replace('.pt', '.p'), 'wb'))
 
             summary = anpe._summary
             for epoch, (train_loss, val_loss) in enumerate(zip(summary["training_loss"], summary["validation_loss"])):
@@ -679,6 +697,7 @@ if __name__ == '__main__':
         sedfit.sim_training_set(ntrain=int(args.ntrain))
         sys.exit()
 
-    hatp_x_y = sedfit.baseline_sbi_model(prior_type='independent', augment_train=args.aug_train, augment_size=args.aug_size, 
+    hatp_x_y = sedfit.baseline_sbi_model(prior_type='independent', augment_train=args.aug_train, augment_size=int(args.aug_size), 
                                          clip_bright=args.clip_bright, flow_model=args.flow_model, hidden_features=args.hidden_features, 
-                                         ntransforms=args.ntransforms, nbins=args.nbins, batch_size=256, valfrac=0.1, stop_epochs=20)
+                                         ntransforms=args.ntransforms, nbins=args.nbins, batch_size=args.batch_size, valfrac=0.1, 
+                                         stop_epochs=args.stop_epochs)
