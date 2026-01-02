@@ -35,6 +35,7 @@ import rsg_phot.sbi_pp as sbi_pp
 import signal
 import trackio
 import json, hashlib
+from pathlib import Path
 
 from rsg_phot.mcmc import mcmc
 from rsg_phot.mc_parallel import rsg_dataloader
@@ -79,6 +80,7 @@ def create_parser():
     parser.add_argument('--nbins', type=int, default=10, help='Number of bins for spline flow (only for nsf)')
     parser.add_argument('--batch_size', type=int, default=256, help='Batch size for the SBI neural net')
     parser.add_argument('--stop_epochs', type=int, default=50, help='Patience epochs for SBI training')
+    parser.add_argument('--use_combined_loss', default=False, action=argparse.BooleanOptionalAction, help='Use combined loss to train the neural net?')
 
     return parser
 
@@ -229,9 +231,6 @@ class sbifit(object):
         self.training_set_fname = fname
 
         df.to_csv(fname, index=False)
-
-    def _exp(self, x, a, x0, scale):
-        return a*np.exp((x-x0)*scale)
 
     def sim_mag_err(self, train:pd.DataFrame, noise_floor:float=0.01, interp_bins:int=30) -> np.ndarray:
         erc_ = self.rsgloader.cols['errcols'][self.rsgloader.flt_mask]
@@ -418,10 +417,26 @@ class sbifit(object):
         config_str = json.dumps(config, sort_keys=True)
         h = hashlib.sha1(config_str.encode()).hexdigest()
         return h[:n_chars]
+    
+    def model_info(self, savepath):
+        with open(savepath.replace('.pt', '.json'), 'rb') as f:
+            config = json.load(f)
+
+        with open(savepath.replace('.pt', '.p'), 'rb') as f:
+            loss = pickle.load(f)
+
+        self.logger.info('SBI config:' + '\n' + json.dumps(config, indent=2))
+
+        plt.figure()
+        plt.plot(loss['validation_loss'], label='Val loss', color='royalblue')
+        plt.plot(loss['training_loss'], label='Train loss', color='orange', ls='--')
+        plt.legend()
+        plt.show();
 
     def baseline_sbi_model(self, prior_type='independent', augment_train=False, augment_size=int(3e5), 
                            clip_bright=False, flow_model='nsf', hidden_features=15, ntransforms=3, nbins=10,
-                           batch_size=256, valfrac=0.1, stop_epochs=50, noise_floor=0.01, savepath=None):
+                           use_combined_loss=False, batch_size=256, valfrac=0.1, stop_epochs=50, noise_floor=0.01,
+                           savepath=None):
         assert self.rsgloader.rsgcat is not None
 
         ndim = int(len(self.gen_mc_obj.model_fit_params))
@@ -494,29 +509,40 @@ class sbifit(object):
         x_tensor = torch.as_tensor(self.x_train.astype(np.float32)).to(self.device)
         y_tensor = torch.as_tensor(self.y_train.astype(np.float32)).to(self.device)
         anpe.append_simulations(x_tensor, y_tensor)
-        if savepath is None:
-            savepath = os.path.join(self.procdir, f'npe_{flow_model}_{hidden_features}_{ntransforms}_{nbins}.pt')
 
-        if not os.path.exists(savepath):
+        # define SBI config
+        sbi_config = {
+            'galaxy': self.rsgloader.gal,
+            'prior_type': prior_type,
+            'augment_train': str(augment_train),
+            'flow_model': flow_model,
+            "hidden_features":hidden_features,
+            "ntransforms": ntransforms,
+            "nbins_nsf": nbins,
+            "batch_size": batch_size,
+            "use_combined_loss": str(use_combined_loss),
+            "patience": stop_epochs,
+            "lr": 5e-4,
+            "ntrain": len(self.x_train)
+        }
+
+        if savepath is None:
+            self.savepath = os.path.join(self.procdir, f"npe_{self.model_id_from_config(config=sbi_config, n_chars=8)}.pt")
+        else: 
+            self.savepath = savepath
+
+        if not os.path.exists(self.savepath):
             self.logger.info('No trained model found. Training NPE...')
             # start experiment tracking 
-            trackio.init(project="jwst-rsg-sbi",
-                         config={"flow_model":flow_model,
-                                 "hidden_features":hidden_features,
-                                 "ntransforms": ntransforms,
-                                 "nbins_nsf": nbins,
-                                 "batch_size": batch_size,
-                                 "patience": stop_epochs,
-                                 "lr": 5e-4,
-                                 "ntrain": len(self.x_train)
-                                }
-                        )
+            trackio.init(project="jwst-rsg-sbi", config=sbi_config)
             sys.stdout = NewlineStdout(sys.stdout)
-            p_x_y_estimator = anpe.train(training_batch_size=batch_size, use_combined_loss=False, validation_fraction=valfrac, 
-                                         stop_after_epochs=stop_epochs, show_train_summary=True)
+            p_x_y_estimator = anpe.train(training_batch_size=batch_size, use_combined_loss=use_combined_loss, validation_fraction=valfrac, 
+                                         stop_after_epochs=stop_epochs, show_train_summary=True, max_num_epochs=20)
             # save trained NPE
-            torch.save(p_x_y_estimator.state_dict(), savepath)
-            pickle.dump(anpe._summary, open(savepath.replace('.pt', '.p'), 'wb'))
+            torch.save(p_x_y_estimator.state_dict(), self.savepath)
+            pickle.dump(anpe._summary, open(self.savepath.replace('.pt', '.p'), 'wb'))
+            with open(self.savepath.replace('.pt', '.json'), "w") as f:
+                json.dump(sbi_config, f, indent=2)
 
             summary = anpe._summary
             for epoch, (train_loss, val_loss) in enumerate(zip(summary["training_loss"], summary["validation_loss"])):
@@ -526,12 +552,12 @@ class sbifit(object):
                     "val_loss": val_loss,
                 })
 
-            trackio.save(savepath)
+            trackio.save(self.savepath)
             trackio.finish()
 
-        self.logger.info(f"Loaded trained NPE from {savepath}")
+        self.logger.info(f"Loaded trained NPE from {self.savepath}")
         p_x_y_estimator = anpe._build_neural_net(x_tensor, y_tensor)
-        p_x_y_estimator.load_state_dict(torch.load(savepath, map_location=torch.device(self.device)))
+        p_x_y_estimator.load_state_dict(torch.load(self.savepath, map_location=torch.device(self.device)))
         anpe._x_shape = sbi_utils.x_shape_from_simulation(y_tensor)
         hatp_x_y = anpe.build_posterior(p_x_y_estimator)
         self.hatp_x_y = hatp_x_y
@@ -697,5 +723,5 @@ if __name__ == '__main__':
 
     hatp_x_y = sedfit.baseline_sbi_model(prior_type='independent', augment_train=args.aug_train, augment_size=int(args.aug_size), 
                                          clip_bright=args.clip_bright, flow_model=args.flow_model, hidden_features=args.hidden_features, 
-                                         ntransforms=args.ntransforms, nbins=args.nbins, batch_size=args.batch_size, valfrac=0.1, 
-                                         stop_epochs=args.stop_epochs)
+                                         ntransforms=args.ntransforms, nbins=args.nbins, use_combined_loss=args.use_combined_loss,
+                                         batch_size=args.batch_size, valfrac=0.1, stop_epochs=args.stop_epochs)
