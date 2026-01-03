@@ -1,7 +1,6 @@
 import warnings
 warnings.simplefilter('ignore')
 import numpy as np
-import os, glob
 import sys
 import pickle
 import astropy.units as u
@@ -137,8 +136,8 @@ class sbifit(object):
     def __init__(self, rsg_dataloader:rsg_dataloader, comp:str='sil', modeltype:str='MARCS', device:str='cpu'):
 
         self.rsgloader = rsg_dataloader
-        self.procdir = os.path.join(self.rsgloader.procdir, 'sbi')
-        os.makedirs(self.procdir, exist_ok=True)
+        self.procdir = self.rsgloader.procdir / 'sbi'
+        self.procdir.mkdir(parents=True, exist_ok=True)
 
         self.rsgcat = self.rsgloader.rsgcat
         self.logger = self.rsgloader.logger
@@ -147,7 +146,7 @@ class sbifit(object):
         self.modeltype = modeltype
         self.device = device
 
-        self.training_set_fname = os.path.join(os.pardir, 'data', 'sbi', f"sim_{self.modeltype}_{self.comp}_Z{self.logz}.csv")
+        self.training_set_fname = Path("..") / 'data' / 'sbi' / f"sim_{self.modeltype}_{self.comp}_Z{self.logz}.csv"
         self.gen_mc_obj = mcmc(dm=0, dmerr=0, z=self.logz, model_type=self.modeltype, comp=self.comp)
 
         # in practice, rsgcat has a cut logL ~ 3.5 - avoid wasting 15% of the training set 
@@ -225,9 +224,9 @@ class sbifit(object):
         # save training set to csv
         cols = self.gen_mc_obj.model_fit_params + list(self.rsgloader.nrc_filts)
         df = pd.DataFrame(sim, columns=cols)
-        sim_outdir = os.path.join(os.pardir, 'data', 'sbi')
-        os.makedirs(sim_outdir, exist_ok=True)
-        fname = os.path.join(sim_outdir, f"sim_{self.modeltype}_{self.comp}_Z{self.logz}.csv")
+        sim_outdir = Path("..") / 'data' / 'sbi'
+        sim_outdir.mkdir(parents=True, exist_ok=True)
+        fname = sim_outdir / f"sim_{self.modeltype}_{self.comp}_Z{self.logz}.csv"
         self.training_set_fname = fname
 
         df.to_csv(fname, index=False)
@@ -419,13 +418,15 @@ class sbifit(object):
         return h[:n_chars]
     
     def model_info(self, savepath):
-        with open(savepath.replace('.pt', '.json'), 'rb') as f:
-            config = json.load(f)
+        try:
+            with open(savepath.with_suffix('.json'), 'rb') as f:
+                config = json.load(f)
+            self.logger.info('SBI config:' + '\n' + json.dumps(config, indent=2))
+        except:
+            self.logger.info('WARNING: Config file not found')
 
-        with open(savepath.replace('.pt', '.p'), 'rb') as f:
+        with open(savepath.with_suffix('.p'), 'rb') as f:
             loss = pickle.load(f)
-
-        self.logger.info('SBI config:' + '\n' + json.dumps(config, indent=2))
 
         plt.figure()
         plt.plot(loss['validation_loss'], label='Val loss', color='royalblue')
@@ -441,18 +442,18 @@ class sbifit(object):
 
         ndim = int(len(self.gen_mc_obj.model_fit_params))
         if augment_train:
-            load_train = os.path.join(self.procdir, f'train_{self.rsgloader.gal}_aug.csv')
+            load_train = self.procdir / f'train_{self.rsgloader.gal}_aug.csv'
         else:
-            load_train = os.path.join(self.procdir, f'train_{self.rsgloader.gal}.csv')
-        if os.path.exists(load_train):
-            self.logger.info(f'Training set exists; Loading x and y train from {load_train}')
+            load_train = self.procdir / f'train_{self.rsgloader.gal}.csv'
+        if load_train.exists():
+            self.logger.info(f'Training set exists; Loading x and y train from {str(load_train.resolve())}')
             train_set = pd.read_csv(load_train)
             params = train_set[train_set.columns[:ndim]]
             phot = train_set[train_set.columns[ndim:]]
             self.x_train = params.to_numpy(dtype=np.float32)
             self.y_train = phot.to_numpy(dtype=np.float32)
         else:
-            self.logger.info(f'Training set does not exist; Will be saved at {load_train}')
+            self.logger.info(f'Training set does not exist; Will be saved at {str(load_train.name.resolve())}')
             train = pd.read_csv(self.training_set_fname)
             if clip_bright:
                 train = self.clip_bright_train_samples(train)
@@ -527,21 +528,21 @@ class sbifit(object):
         }
 
         if savepath is None:
-            self.savepath = os.path.join(self.procdir, f"npe_{self.model_id_from_config(config=sbi_config, n_chars=8)}.pt")
+            self.savepath = self.procdir / f"npe_{self.model_id_from_config(config=sbi_config, n_chars=8)}.pt"
         else: 
-            self.savepath = savepath
+            self.savepath = Path(savepath)
 
-        if not os.path.exists(self.savepath):
+        if not self.savepath.exists():
             self.logger.info('No trained model found. Training NPE...')
             # start experiment tracking 
             trackio.init(project="jwst-rsg-sbi", config=sbi_config)
             sys.stdout = NewlineStdout(sys.stdout)
             p_x_y_estimator = anpe.train(training_batch_size=batch_size, use_combined_loss=use_combined_loss, validation_fraction=valfrac, 
-                                         stop_after_epochs=stop_epochs, show_train_summary=True, max_num_epochs=20)
+                                         stop_after_epochs=stop_epochs, show_train_summary=True)
             # save trained NPE
             torch.save(p_x_y_estimator.state_dict(), self.savepath)
-            pickle.dump(anpe._summary, open(self.savepath.replace('.pt', '.p'), 'wb'))
-            with open(self.savepath.replace('.pt', '.json'), "w") as f:
+            pickle.dump(anpe._summary, open(self.savepath.with_suffix('.p'), 'wb'))
+            with open(self.savepath.with_suffix('.json'), "w") as f:
                 json.dump(sbi_config, f, indent=2)
 
             summary = anpe._summary
@@ -555,7 +556,7 @@ class sbifit(object):
             trackio.save(self.savepath)
             trackio.finish()
 
-        self.logger.info(f"Loaded trained NPE from {self.savepath}")
+        self.logger.info(f"Loaded trained NPE from {str(self.savepath.resolve())}")
         p_x_y_estimator = anpe._build_neural_net(x_tensor, y_tensor)
         p_x_y_estimator.load_state_dict(torch.load(self.savepath, map_location=torch.device(self.device)))
         anpe._x_shape = sbi_utils.x_shape_from_simulation(y_tensor)
@@ -591,7 +592,7 @@ class sbifit(object):
             out[i, :] = model_mag
 
         outdf = pd.DataFrame(out, columns=self.rsgloader.cols['flts'][self.rsgloader.flt_mask])
-        noise = self.sim_skew_mag_err(outdf) 
+        noise = self.sim_skew_mag_err(outdf, interp_bins=30) 
 
         out = np.hstack((out, noise))
         out = torch.as_tensor(out.astype(np.float32)).to('cpu')

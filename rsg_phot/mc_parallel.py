@@ -1,7 +1,6 @@
 import warnings
 warnings.simplefilter('ignore')
 import numpy as np
-import os, glob
 import sys
 import astropy.units as u
 import astropy.constants as const
@@ -16,6 +15,7 @@ import multiprocessing_logging
 from datetime import datetime
 import matplotlib.pyplot as plt
 import corner
+from pathlib import Path
 
 from rsg_phot.rsg_cat import save_photfiles
 from rsg_phot.mcmc import mcmc
@@ -51,16 +51,16 @@ def create_parser():
 
 
 class rsg_dataloader(object):
-    def __init__(self, gal, procdir, photfile_path=None, dm=30.0, dmerr=0.5, z=0.00, 
-                 modeltype='MARCS', trgb=('F090W', 30.0), comp='sil', keep_narrow=False, 
-                 agbcut=False, ignore_filts=None, rsgcat=None):
+    def __init__(self, gal, procdir:Path, photfile_path=None, dm:float=30.0, dmerr:float=0.5, z:float=0.00, 
+                 modeltype:str='MARCS', trgb:tuple=('F090W', 30.0), comp:str='sil', keep_narrow:bool=False, 
+                 agbcut:bool=False, ignore_filts=None, rsgcat=None):
         
         self.gal = gal
-        self.procdir = procdir
-        os.makedirs(self.procdir, exist_ok=True)
+        self.procdir = Path(procdir)
+        self.procdir.mkdir(parents=True, exist_ok=True)
         self.photfile_path = photfile_path
-        self.backend_dir = os.path.join(self.procdir, 'backends')
-        os.makedirs(self.backend_dir, exist_ok=True)
+        self.backend_dir = self.procdir / 'backends'
+        self.backend_dir.mkdir(parents=True, exist_ok=True)
         self.logger = logger
 
         self.keep_narrow = keep_narrow
@@ -75,6 +75,7 @@ class rsg_dataloader(object):
         if rsgcat is not None:
             if self.photfile_path is not None:
                 try:
+                    self.photfile_path = Path(self.photfile_path)
                     self.cat = self.read_cat(self.photfile_path)
                 except Exception as e:
                     self.logger.info('Cannot load complete DOLPHOT catalog due to the following exception: ', e)
@@ -88,8 +89,8 @@ class rsg_dataloader(object):
         else:
             if self.photfile_path is None:
                 raise ValueError('At least one of rsgcat or photfile_path is required as input')
-            if not os.path.exists(self.photfile_path):
-                raise ValueError(f'photfile_path {self.photfile_path} does not exist')
+            if not self.photfile_path.exists():
+                raise ValueError(f'photfile_path {str(self.photfile_path.resolve(strict=False))} does not exist')
             self.cat = self.read_cat(self.photfile_path)
             self.set_cols(self.cat)
             self.rsgcat = None
@@ -111,16 +112,17 @@ class rsg_dataloader(object):
             'tau_' : np.array(list(np.linspace(0.01, 2, 21)) + list(np.arange(2.5, 5.5, 0.5))),
             'Av_' : np.array(list(np.linspace(0, 1, 5))+ list(np.linspace(1.5, 3, 4)))
         }
-        self.chimin_modeldir = os.path.join(os.pardir, 'data', 'chimin_models')
+        self.chimin_modeldir = Path("..") / "data" / "chimin_models"
         
     def read_cat(self, photfile_path):
-        catpath = os.path.join(self.procdir, 'proc')
-        os.makedirs(catpath, exist_ok=True)
-        if len(glob.glob(os.path.join(catpath, '*csv'))) == 0:
+        catpath = self.procdir / 'proc'
+        catpath.mkdir(parents=True, exist_ok=True)
+        savefiles = list(catpath.glob('*csv'))
+        if len(savefiles) == 0:
             save_photfiles(photfile_path, catpath)
 
         cat = None
-        for fl in glob.glob(os.path.join(catpath, '*csv')):
+        for fl in savefiles:
             if cat is None:
                 cat = pd.read_csv(fl)
             else:
@@ -262,10 +264,10 @@ class rsg_dataloader(object):
     
     def create_modeldf(self, outpath=None):
         if outpath is None:
-            outpath = os.path.join(self.chimin_modeldir, f'{self.comp}_z{self.z:.2f}_modeldf.csv')
+            outpath = self.chimin_modeldir / f'{self.comp}_z{self.z:.2f}_modeldf.csv'
 
         # if modeldf for composition and metalllicity exists, read it
-        if os.path.exists(outpath):
+        if outpath.exists():
             modeldf = pd.read_csv(outpath)
         # else create a grid at 10 Mpc (needs to be done once)
         else:
@@ -380,7 +382,7 @@ class rsg_dataloader(object):
 
         modeldf = self.create_modeldf(outpath=outpath)
         rsgcat = self.chimin_cuts(base_rsgcat, modeldf)
-        rsgcat.to_csv(os.path.join(self.procdir, f'{self.gal}_{self.comp}_rsgcat.csv'))
+        rsgcat.to_csv(self.procdir / f'{self.gal}_{self.comp}_rsgcat.csv')
         self.rsgcat = rsgcat
 
 class mcmcfit(object):
@@ -405,10 +407,10 @@ class mcmcfit(object):
         self.mc_obj = mcmc(dm=self.rsgloader.dm, dmerr=self.rsgloader.dmerr, z=self.rsgloader.z, 
                            model_type=self.modeltype, comp=self.comp)
         self.mc_obj.verbose=verbose
-        if os.path.exists(self.rsgloader.backend_dir):
+        if self.rsgloader.backend_dir.exists():
             self.mc_obj.dirs['backends'] = self.rsgloader.backend_dir
         else:
-            self.mc_obj.dirs['backends'] = os.path.join(os.pardir, 'data', 'backends')
+            self.mc_obj.dirs['backends'] = Path("..") / 'data' / 'backends'
 
     def mp_init(self,
                 init_success: int = 0,
@@ -531,7 +533,7 @@ class mcmcfit(object):
 
         argument_list = []
         for idx_ in self.rsgcat.index:
-            if self.redo_mcmc or not os.path.exists(os.path.join(self.rsgloader.backend_dir, self.rsgloader.gal.upper()+'_'+str(int(idx_))+'_'+self.rsgloader.modeltype+'.h5')): 
+            if self.redo_mcmc or not (self.rsgloader.backend_dir / self.rsgloader.gal.upper()+'_'+str(int(idx_))+'_'+self.rsgloader.modeltype+'.h5').exists(): 
                 argument_list.append([self.rsgcat.loc[idx_]])
             else:
                 continue
@@ -549,7 +551,7 @@ class mcmcfit(object):
         for idx_ in self.rsgcat.index:
             self.read_mc_params(self.rsgcat.loc[idx_])
 
-        self.rsgcat.to_csv(os.path.join(self.rsgloader.procdir, f'rsgcat_{self.rsgloader.gal}_MCMC_{self.rsgloader.modeltype}.csv'), index=False)
+        self.rsgcat.to_csv(self.rsgloader.procdir / f'rsgcat_{self.rsgloader.gal}_MCMC_{self.rsgloader.modeltype}.csv', index=False)
     
 if __name__=='__main__':
     parser = create_parser()

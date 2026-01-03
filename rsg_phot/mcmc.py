@@ -16,6 +16,7 @@ import random
 from astropy.stats import sigma_clipped_stats as scs
 import time
 from scipy.stats import truncexpon
+from pathlib import Path
 
 DUST_BB_MASS = 2.4319771e-12
 RSG_V_WIND = 50.0 * u.km/u.s
@@ -61,9 +62,9 @@ class mcmc(object):
         self.comp = comp
         sgn = '+' if z > -1e-5 else '-'
         self.dirs = {
-            'bandpass':os.path.join(os.pardir, 'data', 'bandpass'),
-            'model_grid':os.path.join(os.pardir, 'data', 'interpolate', f'{self.model_type}_Z{sgn}{np.abs(z):.2f}_{self.comp}.pkl'),
-            'backends':os.path.join(os.pardir, 'data', 'backends')
+            'bandpass':Path("..") / 'data' / 'bandpass',
+            'model_grid':Path("..") / 'data' / 'interpolate' / f'{self.model_type}_Z{sgn}{np.abs(z):.2f}_{self.comp}.pkl',
+            'backends':Path("..") / 'data' / 'backends'
         }
         with open(self.dirs['model_grid'], 'rb') as f:
             self.model = pickle.load(f)
@@ -125,7 +126,7 @@ class mcmc(object):
             newname += str(ord(c))
         newname = str(int(newname)%100207100213100237100267)
 
-        backfile = os.path.join(self.dirs['backends'], objname+'_'+self.model_type+'.h5')
+        backfile = self.dirs['backends'] / objname+'_'+self.model_type+'.h5'
         if self.verbose:
             print('Backend file:',backfile)
             print('Backend name:',newname)
