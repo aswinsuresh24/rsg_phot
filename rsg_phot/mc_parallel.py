@@ -214,57 +214,12 @@ class rsg_dataloader(object):
 
         return rsgcat
     
-    def color_cuts(self, base_rsgcat, min_width=0.5, rel_err=0.25):
-        self.logger.info(f'Applying color cuts')
-        cat_mags = base_rsgcat[self.cols['magcols']]
-        color_dict = {}
-        cmb_iterator = list(itertools.combinations(self.nrc_filts, 2))
-        idx_iterator = list(itertools.combinations(range(0, 29), 2))
-        
-        self.gen_mc_obj.reset_bounds()
-        self.gen_mc_obj.bounds['luminosity'] = [3.5, 6.0]
-        self.gen_mc_obj.bounds['temperature'] = [2600., 5000.]
-
-        sample_models = np.zeros((10000, len(self.nrc_filts)))
-        sample_params = self.gen_mc_obj.get_init_pos(10000)
-
-        for i, p_ in enumerate(sample_params):
-            model_mag = np.array([self.gen_mc_obj.model[f](sample_params[i]).flatten()[0] for f in self.nrc_filts]) + self.gen_mc_obj.dm
-            sample_models[i, :] = model_mag
-
-        for i, j in zip(idx_iterator, cmb_iterator):
-            f1, f2 = j[0], j[1]
-            i1, i2 = i[0], i[1]
-            index = f1+'_'+f2
-            color_bounds = sample_models[:, i1] - sample_models[:, i2]
-            cl_min = min(color_bounds) - rel_err 
-            cl_max = max(color_bounds) + rel_err 
-            cld = cl_max - cl_min
-            if cld < min_width:
-                cl_min = cl_min - (min_width - cld)/2
-                cl_max = cl_max + (min_width - cld)/2
-            color_dict[index] = (cl_min, cl_max)
-
-        nwm = np.array(['N' in i for i in self.cols['magcols']])
-        im = [i.split('_mag')[0].upper() in self.ignore_filts for i in sedfit.cols['magcols']]
-        mfls = self.cols['magcols'][~(nwm|im)]
-
-        colorm = np.array([True]*len(cat_mags))
-        for i, j in itertools.combinations(mfls, 2):
-            idx_ = i.replace('_mag', '')+'_'+j.replace('_mag', '')
-            cat_color = cat_mags[i] - cat_mags[j]
-            dm = (cat_mags[i] > 90) | (cat_mags[j] > 90)
-            colm_ = (cat_color > color_dict[idx_][0]) & (cat_color < color_dict[idx_][1])
-            colm_ = colm_ | dm
-            colorm = colorm & colm_
-
-        rsgcat = base_rsgcat[colorm]
-        self.logger.info(f'RSG catalog contains {len(rsgcat)} objects after color cuts')
-        return rsgcat
-    
-    def create_modeldf(self, outpath=None):
+    def create_modeldf(self, outpath:Path=None):
         if outpath is None:
             outpath = self.chimin_modeldir / f'{self.comp}_z{self.z:.2f}_modeldf.csv'
+        else:
+            outpath = Path(outpath)
+        outpath.parent.mkdir(parents=True, exist_ok=True)
 
         # if modeldf for composition and metalllicity exists, read it
         if outpath.exists():
@@ -272,16 +227,22 @@ class rsg_dataloader(object):
         # else create a grid at 10 Mpc (needs to be done once)
         else:
             self.logger.info(f'Creating modeldf for comp={self.comp}, Z={self.z:.2f}: {outpath}')
-            modeldf = pd.DataFrame(columns = ['Teff', 'Tdust', 'Tau', 'Av'] + list(self.nrc_filts))
-            self.gen_mc_obj.reset_bounds()
-            for a1 in tqdm(self.chimin_params['teff_']):
-                for a2 in self.chimin_params['tdust_']:
-                    for a3 in self.chimin_params['tau_']:
-                        for a4 in self.chimin_params['Av_']:
-                            pm_ = [a1, a2, a3, 1e3, 3.1, a4]
-                            model_mag = np.array([self.gen_mc_obj.model[f](pm_).flatten()[0] for f in self.nrc_filts])
-                            modeldf.loc[len(modeldf), ['Teff', 'Tdust', 'Tau', 'Av'] + list(self.nrc_filts)] = [a1, a2, a3, a4] + list(model_mag)
+            # modeldf = pd.DataFrame(columns = ['Teff', 'Tdust', 'Tau', 'Av'] + list(self.nrc_filts))
+            nmodel = 1
+            for v in self.chimin_params.values():
+                nmodel *= len(v)
 
+            model_ = np.zeros((nmodel, 4 + len(self.nrc_filts)))
+            self.gen_mc_obj.reset_bounds()
+            param_combos = itertools.product(self.chimin_params['teff_'], self.chimin_params['tdust_'],
+                                             self.chimin_params['tau_'], self.chimin_params['Av_'])
+            for i, (a1, a2, a3, a4) in enumerate(tqdm(param_combos, total=nmodel)):
+                pm_ = [a1, a2, a3, 3.0, 3.1, a4]
+                model_mag = np.array([self.gen_mc_obj.model[f](pm_).flatten()[0] for f in self.nrc_filts])
+                model_[i, :] = ([a1, a2, a3, a4] + list(model_mag))
+                print([a1, a2, a3, a4], model_mag)
+
+            modeldf = pd.DataFrame(data=model_, columns=['Teff', 'Tdust', 'Tau', 'Av'] + list(self.nrc_filts))
             modeldf.to_csv(outpath, index=False)
 
         # add distance to galaxy to modeldf
@@ -313,9 +274,9 @@ class rsg_dataloader(object):
         minchisq = np.argmin(chisqe)
 
         bestparams = modeldf.loc[minchisq, ['Teff', 'Tdust', 'Tau', 'Av']].values
-        pm_ = [bestparams[0], bestparams[1], bestparams[2], 1e3, 3.1, bestparams[3]]
+        pm_ = [bestparams[0], bestparams[1], bestparams[2], 3.0, 3.1, bestparams[3]]
         bestmodel = np.array([self.gen_mc_obj.model[f](pm_).flatten()[0] for f in phot['inst_filt']]) + self.gen_mc_obj.dm 
-        lum = 10**(np.mean((phot['mag'] - bestmodel)/-2.5)) * 1e3
+        lum = np.mean((phot['mag'] - bestmodel)/-2.5) + 3.0
 
         return chisq[minchisq], minchisq, lum      
 
@@ -334,7 +295,7 @@ class rsg_dataloader(object):
         if self.agbcut:
             tm = (base_rsgcat['teff_chisq'] > 3300) & (base_rsgcat['teff_chisq'] < 4700)
             tum = base_rsgcat['tau_chisq'].values > 1
-            lm = np.log10(base_rsgcat['lum_chisq'].values) > 4.5
+            lm = base_rsgcat['lum_chisq'].values > 4.5
             cm = base_rsgcat['chimin'] < chi_cut
             mask = cm & (tm | tum | lm)
         else:
@@ -373,13 +334,8 @@ class rsg_dataloader(object):
         plt.tight_layout()
         plt.show()
     
-    def apply_initial_cuts(self, colcuts=False, outpath=None, min_det=4):
-        if not self.agbcut:
-            self.logger.info(f'WARNING: AGB cut set to {self.agbcut}')
+    def apply_initial_cuts(self, outpath=None, min_det=4):
         base_rsgcat = self.base_cuts(self.cat, min_det=min_det)
-        if colcuts:
-            base_rsgcat = self.color_cuts(base_rsgcat)
-
         modeldf = self.create_modeldf(outpath=outpath)
         rsgcat = self.chimin_cuts(base_rsgcat, modeldf)
         rsgcat.to_csv(self.procdir / f'{self.gal}_{self.comp}_rsgcat.csv')

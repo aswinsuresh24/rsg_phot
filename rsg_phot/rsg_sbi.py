@@ -453,7 +453,7 @@ class sbifit(object):
             self.x_train = params.to_numpy(dtype=np.float32)
             self.y_train = phot.to_numpy(dtype=np.float32)
         else:
-            self.logger.info(f'Training set does not exist; Will be saved at {str(load_train.name.resolve())}')
+            self.logger.info(f'Training set does not exist; Will be saved at {str(load_train.resolve())}')
             train = pd.read_csv(self.training_set_fname)
             if clip_bright:
                 train = self.clip_bright_train_samples(train)

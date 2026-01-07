@@ -126,7 +126,7 @@ class mcmc(object):
             newname += str(ord(c))
         newname = str(int(newname)%100207100213100237100267)
 
-        backfile = self.dirs['backends'] / objname+'_'+self.model_type+'.h5'
+        backfile = self.dirs['backends'] / str(objname+'_'+self.model_type+'.h5')
         if self.verbose:
             print('Backend file:',backfile)
             print('Backend name:',newname)
