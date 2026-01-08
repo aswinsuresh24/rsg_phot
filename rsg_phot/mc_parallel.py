@@ -44,6 +44,10 @@ def create_parser():
     parser.add_argument('--comp', type=str, default='sil', help='Dust composition of RSG model (sil / grf)')
     parser.add_argument('--keep_narrow', type=bool, default=False, help='Fit narrow band photometry?')
     parser.add_argument('--ignore_filts', nargs='*', help='Photometry to avoid fitting')
+
+    parser.add_argument('--chimin', default=False, action=argparse.BooleanOptionalAction, help='Apply chi-min cuts to create RSG catalog')
+    parser.add_argument('--min_det', type=int, default=4, help='Minimum number of detections for RSG catalog')
+    parser.add_argument('--mcmc_fit', default=False, action=argparse.BooleanOptionalAction, help='Run MCMC fitting on RSG catalog')
     parser.add_argument('--ncores', type=int, default=1, help='Number of CPU cores')
     parser.add_argument('--redo_mcmc', type=bool, default=False, help='Redo MCMC?')
 
@@ -53,7 +57,7 @@ def create_parser():
 class rsg_dataloader(object):
     def __init__(self, gal, procdir:Path, photfile_path=None, dm:float=30.0, dmerr:float=0.5, z:float=0.00, 
                  modeltype:str='MARCS', trgb:tuple=('F090W', 30.0), comp:str='sil', keep_narrow:bool=False, 
-                 agbcut:bool=False, ignore_filts=None, rsgcat=None):
+                 ignore_filts=None, rsgcat=None):
         
         self.gal = gal
         self.procdir = Path(procdir)
@@ -70,7 +74,6 @@ class rsg_dataloader(object):
         self.z = z
         self.modeltype = modeltype
         self.comp = comp
-        self.agbcut = agbcut
 
         if rsgcat is not None:
             if self.photfile_path is not None:
@@ -236,11 +239,10 @@ class rsg_dataloader(object):
             self.gen_mc_obj.reset_bounds()
             param_combos = itertools.product(self.chimin_params['teff_'], self.chimin_params['tdust_'],
                                              self.chimin_params['tau_'], self.chimin_params['Av_'])
-            for i, (a1, a2, a3, a4) in enumerate(tqdm(param_combos, total=nmodel)):
+            for i, (a1, a2, a3, a4) in enumerate(tqdm(param_combos, total=nmodel, mininterval=10)):
                 pm_ = [a1, a2, a3, 3.0, 3.1, a4]
                 model_mag = np.array([self.gen_mc_obj.model[f](pm_).flatten()[0] for f in self.nrc_filts])
                 model_[i, :] = ([a1, a2, a3, a4] + list(model_mag))
-                print([a1, a2, a3, a4], model_mag)
 
             modeldf = pd.DataFrame(data=model_, columns=['Teff', 'Tdust', 'Tau', 'Av'] + list(self.nrc_filts))
             modeldf.to_csv(outpath, index=False)
@@ -292,14 +294,7 @@ class rsg_dataloader(object):
             base_rsgcat.loc[idx, ['teff_chisq', 'tdust_chisq', 'tau_chisq', 'av_chisq']] = modeldf.loc[m_, ['Teff', 'Tdust', 'Tau', 'Av']].values
 
         chi_cut = np.percentile(base_rsgcat['chimin'], 75)
-        if self.agbcut:
-            tm = (base_rsgcat['teff_chisq'] > 3300) & (base_rsgcat['teff_chisq'] < 4700)
-            tum = base_rsgcat['tau_chisq'].values > 1
-            lm = base_rsgcat['lum_chisq'].values > 4.5
-            cm = base_rsgcat['chimin'] < chi_cut
-            mask = cm & (tm | tum | lm)
-        else:
-            mask = base_rsgcat['chimin'] < chi_cut
+        mask = base_rsgcat['chimin'] < chi_cut
 
         rsgcat = base_rsgcat[mask]
         self.logger.info(f'RSG catalog contains {len(rsgcat)} objects after chisq cuts')
@@ -520,12 +515,19 @@ if __name__=='__main__':
     load_args = {
         'gal':args.gal, 'procdir':args.procdir, 'photfile_path':args.photfile_path,
         'dm':args.dm, 'dmerr':args.dmerr, 'z':args.z, 'trgb':tuple(args.trgb),
-        'modeltype':args.modeltype, 'comp':args.comp,
-        'keep_narrow':args.keep_narrow, 'agbcut':False, 'ignore_filts':args.ignore_filts,
-        'rsgcat':rsgcat_in
+        'modeltype':args.modeltype, 'comp':args.comp, 'keep_narrow':args.keep_narrow, 
+        'ignore_filts':args.ignore_filts, 'rsgcat':rsgcat_in
     }
 
     rsgloader = rsg_dataloader(**load_args)
-    sedfit = mcmcfit(rsgloader, ncores=args.ncores, verbose=False, 
-                     modeltype=args.modeltype, comp=args.comp, redo_mcmc=args.redo)
-    sedfit.run_mcmc_parallel()
+    if not args.chimin and not args.mcmc_fit:
+        rsgloader.logger.info('No operation specified. Use --chimin to create RSG catalog or --mcmc_fit to run MCMC fitting on RSG catalog.')
+        sys.exit()
+
+    if args.chimin:
+        rsgloader.apply_initial_cuts(min_det=args.min_det)
+
+    if args.mcmc_fit:
+        sedfit = mcmcfit(rsgloader, ncores=args.ncores, verbose=False, 
+                        modeltype=args.modeltype, comp=args.comp, redo_mcmc=args.redo)
+        sedfit.run_mcmc_parallel()

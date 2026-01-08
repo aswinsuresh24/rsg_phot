@@ -665,6 +665,7 @@ class sbifit(object):
             lp = self.hatp_x_y.log_prob(samp)
             samp = samp[lp > torch.quantile(lp, 0.1)].numpy()
             lp = lp[lp > torch.quantile(lp, 0.1)].numpy()
+            lp = np.clip(lp, a_min=0.0, a_max=None)
             med = np.percentile(samp, 50, weights=lp, method='inverted_cdf', axis=0)
             p16 = np.percentile(samp, 16, weights=lp, method='inverted_cdf', axis=0)
             p84 = np.percentile(samp, 84, weights=lp, method='inverted_cdf', axis=0)
