@@ -231,7 +231,7 @@ class sbifit(object):
 
         df.to_csv(fname, index=False)
 
-    def sim_mag_err(self, train:pd.DataFrame, noise_floor:float=0.01, interp_bins:int=30) -> np.ndarray:
+    def sim_mag_err(self, train:pd.DataFrame, noise_floor:float=0.01, interp_bins:int=100) -> np.ndarray:
         erc_ = self.rsgloader.cols['errcols'][self.rsgloader.flt_mask]
         mc_ = self.rsgloader.cols['magcols'][self.rsgloader.flt_mask]
         tc_ = self.rsgloader.cols['flts'][self.rsgloader.flt_mask]
@@ -243,12 +243,19 @@ class sbifit(object):
             mask = np.isnan(err) | (err > 1.0) |np.isnan(mag) | (mag > 36.0 - self.rsgloader.dm) 
             mag, err = mag[~mask], err[~mask]
 
-            vmin, vmax = np.percentile(mag, [0.3, 99.7]) 
-            mag_bins = np.linspace(vmin, vmax, interp_bins+1)
-            #BUG: if any bin in interp_bins is empty, this doesn't work
+            vmin, vmax = np.percentile(mag, [0.1, 99.9]) 
+            n_samp = ((mag >= vmin) & (mag <= vmax)).sum()
+            n_in_bin = n_samp / interp_bins
+            sorted_mag = np.sort(mag[(mag >= vmin) & (mag <= vmax)])
+            mag_bins = [vmin]
+            for j in range(1, interp_bins):
+                bin_edge = sorted_mag[int(j * n_in_bin)]
+                mag_bins.append(bin_edge)
+            mag_bins.append(vmax)
+
             bin_centers = 0.5 * (mag_bins[1:] + mag_bins[:-1])
-            std_errs = np.array([np.std(err[(mag >= mag_bins[j]) & (mag < mag_bins[j+1])], ddof=1) for j in range(interp_bins)])
-            mu_errs = np.array([np.mean(err[(mag >= mag_bins[j]) & (mag < mag_bins[j+1])]) for j in range(interp_bins)])
+            std_errs = np.array([np.std(err[(mag >= mag_bins[j]) & (mag < mag_bins[j+1])], ddof=1) for j in range(len(mag_bins)-1)])
+            mu_errs = np.array([np.mean(err[(mag >= mag_bins[j]) & (mag < mag_bins[j+1])]) for j in range(len(mag_bins)-1)])
 
             mu_interp = interpolate.InterpolatedUnivariateSpline(bin_centers, mu_errs, k=3, ext=3)
             sig_interp = interpolate.InterpolatedUnivariateSpline(bin_centers, std_errs, k=3, ext=3)
@@ -262,7 +269,7 @@ class sbifit(object):
 
         return train_err
     
-    def sim_skew_mag_err(self, train, noise_floor=0.01, interp_bins=30, sigma_f = 0.3):
+    def sim_skew_mag_err(self, train, noise_floor=0.01, interp_bins=100):
         erc_ = self.rsgloader.cols['errcols'][self.rsgloader.flt_mask]
         mc_ = self.rsgloader.cols['magcols'][self.rsgloader.flt_mask]
         tc_ = self.rsgloader.cols['flts'][self.rsgloader.flt_mask]
@@ -275,11 +282,17 @@ class sbifit(object):
             mag, err = mag[~mask], err[~mask]
 
             vmin, vmax = np.percentile(mag, [0.1, 99.9]) 
-            mag_bins = np.linspace(vmin, vmax, interp_bins+1)
+            n_samp = ((mag >= vmin) & (mag <= vmax)).sum()
+            n_in_bin = n_samp / interp_bins
+            sorted_mag = np.sort(mag[(mag >= vmin) & (mag <= vmax)])
+            mag_bins = [vmin]
+            for j in range(1, interp_bins):
+                bin_edge = sorted_mag[int(j * n_in_bin)]
+                mag_bins.append(bin_edge)
+            mag_bins.append(vmax)
 
             sig_edge = None
-            for j in range(interp_bins):
-                #BUG: if len(ebin_) == 0, this doesn't work
+            for j in range(len(mag_bins)-1):
                 ebin_ = err[(mag >= mag_bins[j]) & (mag < mag_bins[j+1])]
                 tmask_ = (tmag >= mag_bins[j]) & (tmag < mag_bins[j+1])
                 if tmask_.sum() == 0:
@@ -300,8 +313,8 @@ class sbifit(object):
                         mu_e = np.median(ebin_)
                         ae = 0.0
                 
-                if j == interp_bins - 1:
-                    sig_edge = sig_e
+                if j == len(mag_bins)-2:
+                    mu_edge, sig_edge, a_edge = mu_e, sig_e, ae
 
                 resamp_err = skewnorm.rvs(ae, mu_e, sig_e, size=len(tbin_))
                 resamp_err = np.sqrt(resamp_err**2 + noise_floor**2)
@@ -311,16 +324,9 @@ class sbifit(object):
             bright_err = np.random.normal(0.0, 0.005, size=bright_mask.sum())
             train_err[:, i][bright_mask] = np.sqrt(bright_err**2 + noise_floor**2)
 
-            faint_mask = tmag >= vmax + 0.5
-            faint_err = np.random.normal(sigma_f, sigma_f*0.1, size=faint_mask.sum())
+            faint_mask = tmag >= vmax 
+            faint_err = skewnorm.rvs(a_edge, mu_edge, sig_edge, size = faint_mask.sum())
             train_err[:, i][faint_mask] = np.sqrt(faint_err**2 + noise_floor**2) 
-
-            transition_mask = (tmag >= vmax) & (tmag < vmax+0.5)
-            transition_mags = tmag[transition_mask]
-            w = np.clip(np.abs(transition_mags - vmax) / 0.5, a_min=None, a_max=1.0)
-            sig_t = (1 - w) * sig_edge + w * sigma_f
-            transition_err = np.random.normal(sig_t, 0.1*sig_t)
-            train_err[:, i][transition_mask] = np.sqrt(transition_err**2 + noise_floor**2)
 
             train_err[:, i] = np.minimum(train_err[:, i], 0.6)
 
@@ -356,7 +362,7 @@ class sbifit(object):
                     d = 0.0
                     row = rsgcat.loc[idx]
                     obsmag = row[self.rsgloader.cols['magcols'][self.rsgloader.flt_mask]]
-                    t_, td_, l_, tu_, a_ = row['teff_chisq'], row['tdust_chisq'], np.log10(row['lum_chisq']), row['tau_chisq'], row['av_chisq']
+                    t_, td_, l_, tu_, a_ = row['teff_chisq'], row['tdust_chisq'], row['lum_chisq'], row['tau_chisq'], row['av_chisq']
                     if l_ > 6.0: 
                         d = l_ - 6.0
                         l_ = 6.0
@@ -459,8 +465,8 @@ class sbifit(object):
                 train = self.clip_bright_train_samples(train)
             if augment_train:
                 train = self.augment_training_set(train, augment_size)
-            train['temperature'] = train['temperature']/1e3
-            train['dust_temp'] = train['dust_temp']/1e3
+            # train['temperature'] = train['temperature']/1e3
+            # train['dust_temp'] = train['dust_temp']/1e3
             mags = train[train.columns[ndim:]]
             params = train[train.columns[:ndim]]
 
@@ -470,11 +476,11 @@ class sbifit(object):
             
             try:
                 self.logger.info('Modeling magnitude dependent noise using skewnorm distributions')
-                train_err = self.sim_skew_mag_err(train, noise_floor=noise_floor, interp_bins=30)
+                train_err = self.sim_skew_mag_err(train, noise_floor=noise_floor, interp_bins=100)
             except Exception as e:
                 self.logger.info(traceback.format_exc())
                 self.logger.info('Modeling magnitude dependent noise using splines')
-                train_err = self.sim_mag_err(train, noise_floor=noise_floor, interp_bins=30)
+                train_err = self.sim_mag_err(train, noise_floor=noise_floor, interp_bins=100)
             y_err = pd.DataFrame(train_err, columns=self.rsgloader.cols['errcols'][self.rsgloader.flt_mask])
             y_phot = pd.concat([y_mags, y_err], axis=1)
             self.y_train = y_phot.to_numpy(dtype=np.float32)
@@ -583,8 +589,8 @@ class sbifit(object):
         return result
     
     def simulator(self, theta_in):
-        theta_in[:, 0] = theta_in[:, 0]*1e3
-        theta_in[:, 1] = theta_in[:, 1]*1e3
+        # theta_in[:, 0] = theta_in[:, 0]*1e3
+        # theta_in[:, 1] = theta_in[:, 1]*1e3
         out = np.zeros((len(theta_in), len(self.rsgloader.cols['flts'][self.rsgloader.flt_mask])))
 
         for i, theta in enumerate(theta_in):
@@ -592,7 +598,7 @@ class sbifit(object):
             out[i, :] = model_mag
 
         outdf = pd.DataFrame(out, columns=self.rsgloader.cols['flts'][self.rsgloader.flt_mask])
-        noise = self.sim_skew_mag_err(outdf, interp_bins=30) 
+        noise = self.sim_skew_mag_err(outdf, interp_bins=100) 
 
         out = np.hstack((out, noise))
         out = torch.as_tensor(out.astype(np.float32)).to('cpu')
@@ -707,13 +713,15 @@ if __name__ == '__main__':
 
     if args.rsgcat is not None:
         rsgcat_in = pd.read_csv(args.rsgcat)
+        if any(rsgcat_in['lum_chisq'] > 100.0):
+            rsgcat_in['lum_chisq'] = np.log10(rsgcat_in['lum_chisq'])
     else: rsgcat_in = None
 
     load_args = {
         'gal':args.gal, 'procdir':args.procdir, 'photfile_path':args.photfile_path,
         'dm':args.dm, 'dmerr':args.dmerr, 'z':args.z, 'trgb':tuple([str(args.trgb[0]), float(args.trgb[1])]),
         'modeltype':args.modeltype, 'comp':args.comp,
-        'keep_narrow':args.keep_narrow, 'agbcut':False, 'ignore_filts':args.ignore_filts,
+        'keep_narrow':args.keep_narrow, 'ignore_filts':args.ignore_filts,
         'rsgcat':rsgcat_in
     }
 

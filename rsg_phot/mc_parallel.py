@@ -19,7 +19,7 @@ from pathlib import Path
 
 from rsg_phot.rsg_cat import save_photfiles
 from rsg_phot.mcmc import mcmc
-from rsg_phot.utils import logger
+from rsg_phot.utils import logger, TqdmToLogger
 
 def create_parser():
     '''
@@ -42,7 +42,7 @@ def create_parser():
     parser.add_argument('--trgb', nargs='*', default=('F090W', 30), help='Tip of red giant branch')
     parser.add_argument('--modeltype', type=str, default='MARCS', help='Family of RSG models to fit data to (MARCS / MARCS15 / NewEra)')
     parser.add_argument('--comp', type=str, default='sil', help='Dust composition of RSG model (sil / grf)')
-    parser.add_argument('--keep_narrow', type=bool, default=False, help='Fit narrow band photometry?')
+    parser.add_argument('--keep_narrow', default=False, action=argparse.BooleanOptionalAction,  help='Fit narrow band photometry?')
     parser.add_argument('--ignore_filts', nargs='*', help='Photometry to avoid fitting')
 
     parser.add_argument('--chimin', default=False, action=argparse.BooleanOptionalAction, help='Apply chi-min cuts to create RSG catalog')
@@ -92,6 +92,7 @@ class rsg_dataloader(object):
         else:
             if self.photfile_path is None:
                 raise ValueError('At least one of rsgcat or photfile_path is required as input')
+            self.photfile_path = Path(self.photfile_path)
             if not self.photfile_path.exists():
                 raise ValueError(f'photfile_path {str(self.photfile_path.resolve(strict=False))} does not exist')
             self.cat = self.read_cat(self.photfile_path)
@@ -108,7 +109,7 @@ class rsg_dataloader(object):
         self.gen_mc_obj.verbose = False
         self.gen_mc_obj.dirs['backends'] = self.backend_dir
         self.trgb = trgb
-        self.trgb = (int(np.where(self.nrc_filts==self.trgb[0].upper())[0][0]), self.trgb[1])
+        self.trgb = (int(np.where(self.nrc_filts==self.trgb[0].upper())[0][0]), float(self.trgb[1]))
         self.chimin_params = {
             'teff_' : np.arange(2600, 5050, 50),
             'tdust_' : np.arange(200, 1800, 100),
@@ -123,6 +124,7 @@ class rsg_dataloader(object):
         savefiles = list(catpath.glob('*csv'))
         if len(savefiles) == 0:
             save_photfiles(photfile_path, catpath)
+            savefiles = list(catpath.glob('*csv'))
 
         cat = None
         for fl in savefiles:
@@ -285,7 +287,8 @@ class rsg_dataloader(object):
     def chimin_cuts(self, base_rsgcat, modeldf):
         base_rsgcat.loc[:, ['chimin', 'teff_chisq', 'tdust_chisq', 'tau_chisq', 'av_chisq', 'lum_chisq']] = 0.0
         self.logger.info(f'Applying chisq cuts')
-        for idx in tqdm(base_rsgcat.index):
+        tqdm_out = TqdmToLogger(self.logger, level=logging.INFO)
+        for idx in tqdm(base_rsgcat.index, file=tqdm_out, total=len(base_rsgcat), mininterval=20):
             testcol = base_rsgcat.loc[idx]
             phot = self.gen_phot(testcol)
 

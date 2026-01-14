@@ -1,4 +1,5 @@
 import logging
+import io
 
 class NewlineStdout:
     def __init__(self, stream):
@@ -10,6 +11,25 @@ class NewlineStdout:
 
     def flush(self):
         self.stream.flush()
+
+# logging with tqdm to file
+# https://stackoverflow.com/questions/14897756/python-progress-bar-through-logging-module
+class TqdmToLogger(io.StringIO):
+    """
+    Output stream for TQDM which will output to logger module instead of
+    stdout
+    """
+    logger = None
+    level = None
+    buf = ''
+    def __init__(self,logger,level=None):
+        super(TqdmToLogger, self).__init__()
+        self.logger = logger
+        self.level = level or logging.INFO
+    def write(self,buf):
+        self.buf = buf.strip('\r\n\t ')
+    def flush(self):
+        self.logger.log(self.level, self.buf)
 
 
 def getlogger(logfile=None):
