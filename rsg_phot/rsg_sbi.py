@@ -29,6 +29,7 @@ from sbi.analysis.plot import sbc_rank_plot, plot_tarp
 from sbi.diagnostics import check_sbc, check_tarp, run_sbc, run_tarp
 from sklearn.metrics import r2_score
 from sklearn.metrics import root_mean_squared_error as rmse
+from sklearn.decomposition import PCA
 import matplotlib.pyplot as plt
 import rsg_phot.sbi_pp as sbi_pp
 import signal
@@ -295,8 +296,7 @@ class sbifit(object):
             for j in range(len(mag_bins)-1):
                 ebin_ = err[(mag >= mag_bins[j]) & (mag < mag_bins[j+1])]
                 tmask_ = (tmag >= mag_bins[j]) & (tmag < mag_bins[j+1])
-                if tmask_.sum() == 0:
-                    continue
+
                 tbin_ = tmag[tmask_]
                 if len(ebin_) < 30:
                     sig_e = np.std(ebin_, ddof=1)
@@ -443,7 +443,7 @@ class sbifit(object):
     def baseline_sbi_model(self, prior_type='independent', augment_train=False, augment_size=int(3e5), 
                            clip_bright=False, flow_model='nsf', hidden_features=15, ntransforms=3, nbins=10,
                            use_combined_loss=False, batch_size=256, valfrac=0.1, stop_epochs=50, noise_floor=0.01,
-                           savepath=None):
+                           savepath=None, theta_pca=False):
         assert self.rsgloader.rsgcat is not None
 
         ndim = int(len(self.gen_mc_obj.model_fit_params))
@@ -488,6 +488,14 @@ class sbifit(object):
             train_set = pd.concat([params, y_phot], axis=1)
             train_set.to_csv(load_train, index=False)
 
+        if theta_pca:
+            self.logger.info('PCA transforming theta')
+            prior_type = 'uniform'
+            pca = PCA(whiten=True)
+            pca.fit(self.x_train)
+            self.x_train = pca.transform(self.x_train)
+            self.pca = pca
+
         prior_low = sbi_pp.prior_from_train('ll', x_train=self.x_train)
         prior_high = sbi_pp.prior_from_train('ul', x_train=self.x_train)
 
@@ -530,7 +538,8 @@ class sbifit(object):
             "use_combined_loss": str(use_combined_loss),
             "patience": stop_epochs,
             "lr": 5e-4,
-            "ntrain": len(self.x_train)
+            "ntrain": len(self.x_train),
+            "pca": str(theta_pca)
         }
 
         if savepath is None:
@@ -606,7 +615,11 @@ class sbifit(object):
     
     def run_sbc_tarp(self, num_sbc_samples=500, num_posterior_samples=2500, num_workers=1):
         # generate ground truth parameters and corresponding simulated observations for SBC.
-        thetas = self.prior.sample((num_sbc_samples,))
+        try:
+            thetas = self.prior.sample((num_sbc_samples,))
+        except Exception as e:
+            self.logger.info('Load trained model using baseline_sbi_model before running calibration')
+            raise e
         self.logger.info(f'Running SBC on {len(thetas)} samples')
         xs = self.simulator(thetas.clone().detach())
 
@@ -657,7 +670,11 @@ class sbifit(object):
         plt.show()
 
     def test_accuracy(self, nsamp=1000, num_posterior_samples=2500):
-        thetas = self.prior.sample((nsamp,))
+        try:
+            thetas = self.prior.sample((nsamp,))
+        except Exception as e:
+            self.logger.info('Load trained model using baseline_sbi_model before testing accuracy')
+            raise e
         self.logger.info(f'Test accuracy using {len(thetas)} samples')
         xs = self.simulator(thetas.clone().detach())
 
@@ -671,7 +688,7 @@ class sbifit(object):
             lp = self.hatp_x_y.log_prob(samp)
             samp = samp[lp > torch.quantile(lp, 0.1)].numpy()
             lp = lp[lp > torch.quantile(lp, 0.1)].numpy()
-            lp = np.clip(lp, a_min=0.0, a_max=None)
+            lp = 10**lp
             med = np.percentile(samp, 50, weights=lp, method='inverted_cdf', axis=0)
             p16 = np.percentile(samp, 16, weights=lp, method='inverted_cdf', axis=0)
             p84 = np.percentile(samp, 84, weights=lp, method='inverted_cdf', axis=0)
