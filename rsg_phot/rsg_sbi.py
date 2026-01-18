@@ -443,7 +443,7 @@ class sbifit(object):
     def baseline_sbi_model(self, prior_type='independent', augment_train=False, augment_size=int(3e5), 
                            clip_bright=False, flow_model='nsf', hidden_features=15, ntransforms=3, nbins=10,
                            use_combined_loss=False, batch_size=256, valfrac=0.1, stop_epochs=50, noise_floor=0.01,
-                           savepath=None, theta_pca=False):
+                           savepath=None):
         assert self.rsgloader.rsgcat is not None
 
         ndim = int(len(self.gen_mc_obj.model_fit_params))
@@ -456,8 +456,15 @@ class sbifit(object):
             train_set = pd.read_csv(load_train)
             params = train_set[train_set.columns[:ndim]]
             phot = train_set[train_set.columns[ndim:]]
+
+            photmag, photerr = phot[phot.columns[:len(phot.columns)//2]], phot[phot.columns[len(phot.columns)//2:]]
+            ytrain = np.zeros_like(photmag.values)
+            for i in range(len(photmag.columns)):
+                ytrain[:, i] = np.random.normal(photmag[photmag.columns[i]].values, photerr[photerr.columns[i]].values)
+
             self.x_train = params.to_numpy(dtype=np.float32)
-            self.y_train = phot.to_numpy(dtype=np.float32)
+            # self.y_train = phot.to_numpy(dtype=np.float32)
+            self.y_train = ytrain
         else:
             self.logger.info(f'Training set does not exist; Will be saved at {str(load_train.resolve())}')
             train = pd.read_csv(self.training_set_fname)
@@ -487,14 +494,6 @@ class sbifit(object):
 
             train_set = pd.concat([params, y_phot], axis=1)
             train_set.to_csv(load_train, index=False)
-
-        if theta_pca:
-            self.logger.info('PCA transforming theta')
-            prior_type = 'uniform'
-            pca = PCA(whiten=True)
-            pca.fit(self.x_train)
-            self.x_train = pca.transform(self.x_train)
-            self.pca = pca
 
         prior_low = sbi_pp.prior_from_train('ll', x_train=self.x_train)
         prior_high = sbi_pp.prior_from_train('ul', x_train=self.x_train)
@@ -539,7 +538,6 @@ class sbifit(object):
             "patience": stop_epochs,
             "lr": 5e-4,
             "ntrain": len(self.x_train),
-            "pca": str(theta_pca)
         }
 
         if savepath is None:
