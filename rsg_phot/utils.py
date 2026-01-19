@@ -1,5 +1,6 @@
 import logging
 import io
+import sqlite3
 
 class NewlineStdout:
     def __init__(self, stream):
@@ -30,6 +31,21 @@ class TqdmToLogger(io.StringIO):
         self.buf = buf.strip('\r\n\t ')
     def flush(self):
         self.logger.log(self.level, self.buf)
+
+
+
+def create_sqlite_db(db_path: str, logger=None) -> str:
+    if not db_path.name.endswith(".db"):
+        db_path += ".db"
+    try:
+        sqlite3.connect(db_path)
+    except sqlite3.OperationalError as e:
+        logger.info("Failed to open database:", e)
+
+    storage_name = "sqlite:///{}".format(db_path)
+    logger.info(storage_name)
+
+    return storage_name
 
 
 def getlogger(logfile=None):
