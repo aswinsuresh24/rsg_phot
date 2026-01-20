@@ -1,7 +1,7 @@
 import warnings
 warnings.simplefilter('ignore')
 import numpy as np
-import sys
+import sys, os
 import pickle
 import astropy.units as u
 import astropy.constants as const
@@ -12,7 +12,7 @@ import traceback
 import pandas as pd
 import itertools
 from tqdm import tqdm
-from multiprocessing import Pool
+from multiprocessing import Pool, Process
 import argparse
 import logging
 import multiprocessing_logging
@@ -38,10 +38,11 @@ import json, hashlib
 from pathlib import Path
 import optuna
 from optuna.trial import TrialState
+from joblib import parallel_backend
 
 from rsg_phot.mcmc import mcmc
 from rsg_phot.mc_parallel import rsg_dataloader
-from rsg_phot.utils import NewlineStdout, create_sqlite_db
+from rsg_phot.utils import NewlineStdout, create_sqlite_db, stdout_mode
 
 def create_parser():
     '''
@@ -444,10 +445,7 @@ class sbifit(object):
         plt.legend()
         plt.show();
 
-    def baseline_sbi_model(self, prior_type='independent', augment_train=False, augment_size=int(3e5), 
-                           clip_bright=False, flow_model='nsf', lr=5e-4, hidden_features=15, ntransforms=3, nbins=10,
-                           use_combined_loss=False, batch_size=256, valfrac=0.1, stop_epochs=50, noise_floor=0.01,
-                           savepath=None, max_num_epochs=1000, use_trackio=True, show_train_summary=True):
+    def load_training_set(self, augment_train=False, augment_size=int(3e5), clip_bright=False, noise_floor=0.01):
         assert self.rsgloader.rsgcat is not None
 
         ndim = int(len(self.gen_mc_obj.model_fit_params))
@@ -469,8 +467,7 @@ class sbifit(object):
                 train = self.clip_bright_train_samples(train)
             if augment_train:
                 train = self.augment_training_set(train, augment_size)
-            # train['temperature'] = train['temperature']/1e3
-            # train['dust_temp'] = train['dust_temp']/1e3
+
             mags = train[train.columns[ndim:]]
             params = train[train.columns[:ndim]]
 
@@ -491,7 +488,16 @@ class sbifit(object):
 
             train_set = pd.concat([params, y_phot], axis=1)
             train_set.to_csv(load_train, index=False)
+    
+    def baseline_sbi_model(self, prior_type='independent', augment_train=False, augment_size=int(3e5), 
+                           clip_bright=False, flow_model='nsf', lr=5e-4, hidden_features=15, ntransforms=3, nbins=10,
+                           use_combined_loss=False, batch_size=256, valfrac=0.1, stop_epochs=50, noise_floor=0.01,
+                           savepath=None, max_num_epochs=1000, use_trackio=True, train_stdout_mode='newline'):
+        assert self.rsgloader.rsgcat is not None
 
+        self.load_training_set(augment_train=augment_train, augment_size=augment_size, clip_bright=clip_bright, 
+                               noise_floor=noise_floor)
+        
         prior_low = sbi_pp.prior_from_train('ll', x_train=self.x_train)
         prior_high = sbi_pp.prior_from_train('ul', x_train=self.x_train)
 
@@ -547,10 +553,9 @@ class sbifit(object):
             if use_trackio:
                 # start experiment tracking
                 trackio.init(project="jwst-rsg-sbi", config=sbi_config)
-            sys.stdout = NewlineStdout(sys.stdout)
-            p_x_y_estimator = anpe.train(training_batch_size=batch_size, use_combined_loss=use_combined_loss, validation_fraction=valfrac, 
-                                         learning_rate=lr, stop_after_epochs=stop_epochs, show_train_summary=show_train_summary,
-                                         max_num_epochs=max_num_epochs)
+            with stdout_mode(mode=train_stdout_mode):
+                p_x_y_estimator = anpe.train(training_batch_size=batch_size, use_combined_loss=use_combined_loss, validation_fraction=valfrac, 
+                                             learning_rate=lr, stop_after_epochs=stop_epochs, show_train_summary=True, max_num_epochs=max_num_epochs)
             # save trained NPE
             torch.save(p_x_y_estimator.state_dict(), self.savepath)
             pickle.dump(anpe._summary, open(self.savepath.with_suffix('.p'), 'wb'))
@@ -578,10 +583,35 @@ class sbifit(object):
 
         return hatp_x_y
     
+    def load_opt_test_set(self):
+        if self.procdir.name.endswith('sbi'):
+            self.procdir = Path(str(self.procdir).replace('sbi', 'sbi_opt'))
+        self.procdir.mkdir(parents=True, exist_ok=True)
+
+        persistent_path = self.procdir / f'{self.rsgloader.gal}_opt_study.db'
+        self.opt_url = create_sqlite_db(persistent_path, self.logger)
+
+        test_fname = self.procdir / f"{self.rsgloader.gal}_test.csv"
+        if not test_fname.exists():
+            self.sim_training_set(ntrain=int(2e3), prior_type='independent', mix_frac=0.0, fname=test_fname)
+            ndim = int(len(self.gen_mc_obj.model_fit_params))
+            test_df = pd.read_csv(test_fname)
+            test_err = self.sim_skew_mag_err(test_df, noise_floor=0.01, interp_bins=100)
+            y_err = pd.DataFrame(test_err, columns=self.rsgloader.cols['errcols'][self.rsgloader.flt_mask])
+            y_test = test_df[self.rsgloader.cols['flts'][self.rsgloader.flt_mask]]
+            self.y_test = pd.concat([y_test, y_err], axis=1)
+            self.x_test = test_df[test_df.columns[:ndim]]
+            pd.concat([self.x_test, self.y_test], axis=1).to_csv(test_fname, index=False)
+        else:
+            ndim = int(len(self.gen_mc_obj.model_fit_params))
+            test_df = pd.read_csv(test_fname)
+            self.y_test = test_df[test_df.columns[ndim:]]
+            self.x_test = test_df[test_df.columns[:ndim]]
+
     def optimize_sbi(self, tune_param_dict: dict = {"hidden_features": [10, 60],
                                                     "ntransforms": [2, 20],
                                                     "nbins": [5, 20],
-                                                    "batch_size": [64, 512],
+                                                    "batch_size": [32, 64, 128, 256, 512],
                                                     "stop_epochs": [20, 100],
                                                     "lr": [1e-4, 5e-2]},
                      fixed_hyperparameters: dict = {"prior_type":'independent',
@@ -589,46 +619,24 @@ class sbifit(object):
                                                     "augment_size":int(1e5),
                                                     "flow_model": "nsf",
                                                     "use_combined_loss": True,
-                                                    "show_train_summary": False,
+                                                    "train_stdout_mode": 'silent',
                                                     "max_num_epochs": 10,
                                                     "use_trackio": False},
                      n_trials: int=30):
-        
-        if self.procdir.name.endswith('sbi'):
-            self.procdir = Path(str(self.procdir).replace('sbi', 'sbi_opt'))
-        self.procdir.mkdir(parents=True, exist_ok=True)
-
-        persistent_path = self.procdir / f'{self.rsgloader.gal}_opt_study.db'
-        url = create_sqlite_db(persistent_path, self.logger)
 
         study = optuna.create_study(study_name=f'{self.rsgloader.gal}_sbi', 
-                                    storage=url,
-                                    directions=['minimize', 'minimize'],
+                                    storage=self.opt_url,
+                                    direction='minimize',
                                     load_if_exists=True,
                                     pruner=optuna.pruners.MedianPruner(n_startup_trials=5, n_warmup_steps=40, interval_steps=5))
-        
-        # create test set
-        test_fname = self.procdir / f"{self.rsgloader.gal}_test.csv"
-        if not test_fname.exists():
-            self.sim_training_set(ntrain=int(1e3), prior_type='independent', mix_frac=0.0, fname=test_fname)
-            ndim = int(len(self.gen_mc_obj.model_fit_params))
-            test_df = pd.read_csv(test_fname)
-            test_err = self.sim_skew_mag_err(test_df, noise_floor=0.01, interp_bins=100)
-            y_err = pd.DataFrame(test_err, columns=self.rsgloader.cols['errcols'][self.rsgloader.flt_mask])
-            y_test = test_df[self.rsgloader.cols['flts'][self.rsgloader.flt_mask]]
-            y_test = pd.concat([y_test, y_err], axis=1)
-            x_test = test_df[test_df.columns[:ndim]]
-            pd.concat([x_test, y_test], axis=1).to_csv(test_fname, index=False)
-        else:
-            ndim = int(len(self.gen_mc_obj.model_fit_params))
-            test_df = pd.read_csv(test_fname)
-            y_test = test_df[test_df.columns[ndim:]]
-            x_test = test_df[test_df.columns[:ndim]]
 
         def _objective_fn(trial):
+            self.logger.info(f"Running trial {trial.number=} in process {os.getpid()}")
             param_dict = {}
             for param in tune_param_dict:
-                if isinstance(tune_param_dict[param][0], int):
+                if (len(tune_param_dict[param]) > 2) & isinstance(tune_param_dict[param], list):
+                    param_dict[param] = trial.suggest_categorical(param, tune_param_dict[param])
+                elif isinstance(tune_param_dict[param][0], int):
                     param_dict[param] = trial.suggest_int(param, tune_param_dict[param][0], tune_param_dict[param][1])
                 elif isinstance(tune_param_dict[param][0], float):
                     param_dict[param] = trial.suggest_float(param, tune_param_dict[param][0], tune_param_dict[param][1], log=True)
@@ -636,41 +644,20 @@ class sbifit(object):
                     raise ValueError(f'Unsupported hyperparameter type for {param}')
             param_dict.update(fixed_hyperparameters)
             self.logger.info(f'Trial {trial.number}: Testing parameters: {param_dict}')
-            rank, bias = self.run_evaluate_sbi_model(param_dict, x_test, y_test, num_posterior_samples=2500)
-            return rank, bias
+            obj = self.run_evaluate_sbi_model(trial, param_dict, self.x_test, self.y_test, num_posterior_samples=2500, _lambda=1e-3)
+            return obj
         
         study.optimize(_objective_fn, n_trials=n_trials, gc_after_trial=True)
-
-        pruned_trials = study.get_trials(deepcopy=False, states=[TrialState.PRUNED])
-        complete_trials = study.get_trials(deepcopy=False, states=[TrialState.COMPLETE])
-
-        self.logger.info("Study statistics: ")
-        self.logger.info(f"  Number of finished trials: {len(study.trials)}")
-        self.logger.info(f"  Number of pruned trials: {len(pruned_trials)}")
-        self.logger.info(f"  Number of complete trials: {len(complete_trials)}")
-
-        self.logger.info("Best trial:")
-        trial = study.best_trial
-
-        self.logger.info(f"  Value: {trial.value}")
-
-        self.logger.info("  Params: ")
-        for key, value in trial.params.items():
-            self.logger.info(f"    {key}: {value}")
-
-        study_path = self.procdir / f"f'{self.rsgloader.gal}_optuna_study.pkl"
-        pickle.dump(study, open(study_path, 'wb'), compress=3)
     
-    def run_evaluate_sbi_model(self, param_dict, x_test, y_test, num_posterior_samples=2500):
+    def run_evaluate_sbi_model(self, trial, param_dict, x_test, y_test, num_posterior_samples=2500, _lambda=1e-3):
         hatp_x_y = self.baseline_sbi_model(**param_dict)
 
         thetas = torch.as_tensor(x_test.to_numpy(dtype=np.float32)).to(self.device)
         xs = torch.as_tensor(y_test.to_numpy(dtype=np.float32)).to(self.device)
 
-        prior_std = [693.0, 463.0, 3.1, 0.75, 1.16, 1.38]  
         N, D = thetas.shape
         ranks = np.zeros((N, D))
-        biases = []
+        logprob = []
 
         def _sbc_cvm_loss(ranks):
             N, D = ranks.shape
@@ -683,22 +670,51 @@ class sbifit(object):
 
         for idx in range(N):
             i = xs[idx]
-            hatp_x_y.set_default_x(i)
-            samp = self.sample_with_timeout(hatp_x_y, sample_shape=(num_posterior_samples,), x=i, timeout=5, show_progress_bars=False).to(self.device).numpy()
+            hatp_x_y.set_default_x(i)  
+            samp = self.sample_with_timeout(hatp=hatp_x_y, sample_shape=(num_posterior_samples,), show_progress_bars=False, timeout=10, reset_handler=True)
             if samp is None:
                 continue
-
-            med = np.percentile(samp, 50, axis=0)
-            bias_ = np.abs((med - thetas[idx].cpu().numpy()) / prior_std)
-            bias_ = np.delete(bias_, 4)
-            biases.append(bias_)
+            
+            samp = samp.to(self.device).numpy()
+            lp = hatp_x_y.log_prob(thetas[idx].unsqueeze(0)).item()
+            logprob.append(lp)
 
             ranks_ = np.mean(samp < thetas[idx].cpu().numpy(), axis=0)
             ranks[idx] = ranks_
 
         rank_dev = _sbc_cvm_loss(ranks)
-        bias_dev = np.mean(np.linalg.norm(biases, axis=1))
-        return rank_dev, bias_dev
+
+        logprob = np.array(logprob)
+        prob_mask = np.isnan(logprob) | np.isinf(logprob)
+        if prob_mask.sum()/len(prob_mask) > 0.1:
+            self.logger.info(f'Metrics for trial {trial.number}: log(rank) = inf, log(prob) = inf')
+            return 10.0
+        logprob = logprob[~prob_mask]
+        mean_lp = np.mean(logprob)
+        objective = rank_dev - _lambda * mean_lp
+        self.logger.info(f'Metrics for trial {trial.number}: log(rank) = {rank_dev}, log(prob) = {mean_lp}')
+        return objective
+    
+    def log_optuna_results(self):
+        study = optuna.load_study(study_name=f'{self.rsgloader.gal}_sbi', storage=self.opt_url)
+        pruned_trials = study.get_trials(deepcopy=False, states=[TrialState.PRUNED])
+        complete_trials = study.get_trials(deepcopy=False, states=[TrialState.COMPLETE])
+
+        self.logger.info("Study statistics: ")
+        self.logger.info(f"  Number of finished trials: {len(study.trials)}")
+        self.logger.info(f"  Number of pruned trials: {len(pruned_trials)}")
+        self.logger.info(f"  Number of complete trials: {len(complete_trials)}")
+
+        self.logger.info("Best trial:")
+        trial = study.best_trial
+
+        self.logger.info(f"  Value: {trial.value}")
+        self.logger.info("  Params: ")
+        for key, value in trial.params.items():
+            self.logger.info(f"    {key}: {value}")
+
+        study_path = self.procdir / f"{self.rsgloader.gal}_optuna_study.pkl"
+        pickle.dump(study, open(study_path, 'wb'))
 
     def _sampling_timeout_handler(self, signum, frame):
         raise TimeoutError("Sampling exceeded time limit")
@@ -875,13 +891,16 @@ if __name__ == '__main__':
                                             batch_size=args.batch_size, valfrac=0.1, stop_epochs=args.stop_epochs)
         
     elif args.optimize:
+        sedfit.load_opt_test_set()
+        sedfit.load_training_set(augment_train=True, augment_size=int(1e5), noise_floor=0.01)
+
         tune_param_dict = {
             "hidden_features": [10, 60],
             "ntransforms": [2, 20],
             "nbins": [5, 20],
-            "batch_size": [64, 512],
+            "batch_size": [32, 64, 128, 256, 512],
             "stop_epochs": [20, 100],
-            "lr": [1e-4, 5e-2]
+            "lr": [1e-4, 1e-2]
         }
         fixed_hyperparameters = {
             "prior_type":'independent',
@@ -889,12 +908,21 @@ if __name__ == '__main__':
             "augment_size":int(1e5),
             "flow_model": "nsf",
             "use_combined_loss": True,
-            "show_train_summary": False,
+            "train_stdout_mode": 'silent',
             "max_num_epochs": 300,
             "use_trackio": False
         }
-        with Pool(processes=int(args.n_jobs)) as pool:
-            pool.map(
-                sedfit.optimize_sbi(tune_param_dict=tune_param_dict, fixed_hyperparameters=fixed_hyperparameters, 
-                                         n_trials=int(args.optim_trials))
-            )
+
+        n_trials_per_worker = int(args.optim_ntrials / args.ncores)
+        procs = []
+        for _ in range(args.ncores):
+            p = Process(target=sedfit.optimize_sbi, args=(tune_param_dict, 
+                                                          fixed_hyperparameters,
+                                                          n_trials_per_worker))
+            p.start()
+            procs.append(p)
+
+        for p in procs:
+            p.join()
+
+        sedfit.log_optuna_results()

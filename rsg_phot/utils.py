@@ -1,6 +1,9 @@
 import logging
 import io
 import sqlite3
+import contextlib
+import os
+import sys
 
 class NewlineStdout:
     def __init__(self, stream):
@@ -12,6 +15,7 @@ class NewlineStdout:
 
     def flush(self):
         self.stream.flush()
+
 
 # logging with tqdm to file
 # https://stackoverflow.com/questions/14897756/python-progress-bar-through-logging-module
@@ -33,6 +37,31 @@ class TqdmToLogger(io.StringIO):
         self.logger.log(self.level, self.buf)
 
 
+@contextlib.contextmanager
+def stdout_mode(mode='newline'):
+    old_stdout = sys.stdout
+    old_stderr = sys.stderr
+
+    try:
+        if mode == "silent":
+            devnull = open(os.devnull, "w")
+            sys.stdout = devnull
+            sys.stderr = devnull
+
+        elif mode == "newline":
+            sys.stdout = NewlineStdout(old_stdout)
+            sys.stderr = NewlineStdout(old_stderr)
+
+        else:
+            raise ValueError(f"Unknown stdout mode: {mode}")
+
+        yield
+
+    finally:
+        sys.stdout = old_stdout
+        sys.stderr = old_stderr
+        if mode == "silent":
+            devnull.close()
 
 def create_sqlite_db(db_path: str, logger=None) -> str:
     if not db_path.name.endswith(".db"):
