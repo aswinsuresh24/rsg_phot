@@ -42,7 +42,7 @@ from joblib import parallel_backend
 
 from rsg_phot.mcmc import mcmc
 from rsg_phot.mc_parallel import rsg_dataloader
-from rsg_phot.utils import NewlineStdout, create_sqlite_db, stdout_mode
+from rsg_phot.utils import create_sqlite_db, stdout_mode
 
 def create_parser():
     '''
@@ -86,6 +86,7 @@ def create_parser():
     parser.add_argument('--use_combined_loss', default=False, action=argparse.BooleanOptionalAction, help='Use combined loss to train the neural net?')
     parser.add_argument('--optimize', default=False, action=argparse.BooleanOptionalAction, help='Optimize hyperparameters using Optuna?')
     parser.add_argument('--optim_ntrials', type=int, default=30, help='Number of Optuna trials to run')
+    parser.add_argument('--thread_lock', default=False, action=argparse.BooleanOptionalAction, help='Set number of threads to 1?')
 
     return parser
 
@@ -583,13 +584,19 @@ class sbifit(object):
 
         return hatp_x_y
     
-    def load_opt_test_set(self):
+    def setup_optuna(self):
         if self.procdir.name.endswith('sbi'):
             self.procdir = Path(str(self.procdir).replace('sbi', 'sbi_opt'))
         self.procdir.mkdir(parents=True, exist_ok=True)
 
         persistent_path = self.procdir / f'{self.rsgloader.gal}_opt_study.db'
         self.opt_url = create_sqlite_db(persistent_path, self.logger)
+
+        study = optuna.create_study(study_name=f'{self.rsgloader.gal}_sbi', 
+                                                  storage=self.opt_url,
+                                                  direction='minimize',
+                                                  load_if_exists=True,
+                                                  pruner=optuna.pruners.MedianPruner(n_startup_trials=5, n_warmup_steps=40, interval_steps=5))
 
         test_fname = self.procdir / f"{self.rsgloader.gal}_test.csv"
         if not test_fname.exists():
@@ -608,12 +615,15 @@ class sbifit(object):
             self.y_test = test_df[test_df.columns[ndim:]]
             self.x_test = test_df[test_df.columns[:ndim]]
 
-    def optimize_sbi(self, tune_param_dict: dict = {"hidden_features": [10, 60],
-                                                    "ntransforms": [2, 20],
-                                                    "nbins": [5, 20],
-                                                    "batch_size": [32, 64, 128, 256, 512],
-                                                    "stop_epochs": [20, 100],
-                                                    "lr": [1e-4, 5e-2]},
+        return study
+
+    def optimize_sbi(self, study: optuna.study.Study, 
+                     tune_param_dict: dict = {"hidden_features": [10, 60],
+                                              "ntransforms": [2, 20],
+                                              "nbins": [5, 20],
+                                              "batch_size": [32, 64, 128, 256, 512],
+                                              "stop_epochs": [20, 100],
+                                              "lr": [1e-4, 5e-2]},
                      fixed_hyperparameters: dict = {"prior_type":'independent',
                                                     "augment_train":True,
                                                     "augment_size":int(1e5),
@@ -623,12 +633,6 @@ class sbifit(object):
                                                     "max_num_epochs": 10,
                                                     "use_trackio": False},
                      n_trials: int=30):
-
-        study = optuna.create_study(study_name=f'{self.rsgloader.gal}_sbi', 
-                                    storage=self.opt_url,
-                                    direction='minimize',
-                                    load_if_exists=True,
-                                    pruner=optuna.pruners.MedianPruner(n_startup_trials=5, n_warmup_steps=40, interval_steps=5))
 
         def _objective_fn(trial):
             self.logger.info(f"Running trial {trial.number=} in process {os.getpid()}")
@@ -863,6 +867,16 @@ if __name__ == '__main__':
     parser = create_parser()
     args = parser.parse_args()
 
+    if args.thread_lock:
+        import os
+        os.environ["OMP_NUM_THREADS"] = "1"
+        os.environ["MKL_NUM_THREADS"] = "1"
+        os.environ["OPENBLAS_NUM_THREADS"] = "1"
+        os.environ["NUMEXPR_NUM_THREADS"] = "1"
+
+        import torch
+        torch.set_num_threads(1)
+
     if args.rsgcat is not None:
         rsgcat_in = pd.read_csv(args.rsgcat)
         if any(rsgcat_in['lum_chisq'] > 100.0):
@@ -891,7 +905,7 @@ if __name__ == '__main__':
                                             batch_size=args.batch_size, valfrac=0.1, stop_epochs=args.stop_epochs)
         
     elif args.optimize:
-        sedfit.load_opt_test_set()
+        study = sedfit.setup_optuna()
         sedfit.load_training_set(augment_train=True, augment_size=int(1e5), noise_floor=0.01)
 
         tune_param_dict = {
@@ -916,7 +930,8 @@ if __name__ == '__main__':
         n_trials_per_worker = int(args.optim_ntrials / args.ncores)
         procs = []
         for _ in range(args.ncores):
-            p = Process(target=sedfit.optimize_sbi, args=(tune_param_dict, 
+            p = Process(target=sedfit.optimize_sbi, args=(study,
+                                                          tune_param_dict, 
                                                           fixed_hyperparameters,
                                                           n_trials_per_worker))
             p.start()
