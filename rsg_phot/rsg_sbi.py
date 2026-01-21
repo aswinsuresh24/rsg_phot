@@ -584,16 +584,18 @@ class sbifit(object):
 
         return hatp_x_y
     
-    def setup_optuna(self):
+    def setup_optuna(self, ncores=1):
         if self.procdir.name.endswith('sbi'):
             self.procdir = Path(str(self.procdir).replace('sbi', 'sbi_opt'))
         self.procdir.mkdir(parents=True, exist_ok=True)
 
         persistent_path = self.procdir / f'{self.rsgloader.gal}_opt_study.db'
         self.opt_url = create_sqlite_db(persistent_path, self.logger)
+        storage = optuna.storages.RDBStorage(url = self.opt_url, 
+                                             engine_kwargs = {'pool_size' : ncores, 'max_overflow' : 0})
 
         study = optuna.create_study(study_name=f'{self.rsgloader.gal}_sbi', 
-                                                  storage=self.opt_url,
+                                                  storage=storage,
                                                   direction='minimize',
                                                   load_if_exists=True,
                                                   pruner=optuna.pruners.MedianPruner(n_startup_trials=5, n_warmup_steps=40, interval_steps=5))
@@ -905,7 +907,7 @@ if __name__ == '__main__':
                                             batch_size=args.batch_size, valfrac=0.1, stop_epochs=args.stop_epochs)
         
     elif args.optimize:
-        study = sedfit.setup_optuna()
+        study = sedfit.setup_optuna(int(args.ncores))
         sedfit.load_training_set(augment_train=True, augment_size=int(1e5), noise_floor=0.01)
 
         tune_param_dict = {
