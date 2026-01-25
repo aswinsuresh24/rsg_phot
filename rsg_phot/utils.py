@@ -63,7 +63,7 @@ def stdout_mode(mode='newline'):
         if mode == "silent":
             devnull.close()
 
-def create_sqlite_db(db_path: str, logger=None) -> str:
+def create_sqlite_db(db_path: str) -> str:
     if not db_path.name.endswith(".db"):
         db_path += ".db"
     try:
@@ -72,7 +72,6 @@ def create_sqlite_db(db_path: str, logger=None) -> str:
         logger.info("Failed to open database:", e)
 
     storage_name = "sqlite:///{}".format(db_path)
-    logger.info(storage_name)
 
     return storage_name
 

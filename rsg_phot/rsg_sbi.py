@@ -3,6 +3,7 @@ warnings.simplefilter('ignore')
 import numpy as np
 import sys, os
 import pickle
+import copy
 import astropy.units as u
 import astropy.constants as const
 from scipy.stats import gaussian_kde, skewnorm
@@ -75,7 +76,6 @@ def create_parser():
     parser.add_argument('--sim_train', default=False, action=argparse.BooleanOptionalAction, help='Generate training set samples?')
     parser.add_argument('--ntrain', type=int, default=int(4e5), help='Number of samples in simulated training set')
     parser.add_argument('--aug_train', default=False, action=argparse.BooleanOptionalAction, help='Augment training set?')
-    parser.add_argument('--clip_bright', default=False, action=argparse.BooleanOptionalAction, help='Clip ultra-bright sources from training set?')
     parser.add_argument('--aug_size', type=int, default=int(4e5), help='Number of samples in augmented training set')
     parser.add_argument('--flow_model', type=str, default='nsf', help='Flow model for neural posterior estimation (nsf / maf / mdn)')
     parser.add_argument('--hidden_features', type=int, default=50, help='Number of hidden features')
@@ -83,6 +83,7 @@ def create_parser():
     parser.add_argument('--nbins', type=int, default=10, help='Number of bins for spline flow (only for nsf)')
     parser.add_argument('--batch_size', type=int, default=256, help='Batch size for the SBI neural net')
     parser.add_argument('--stop_epochs', type=int, default=50, help='Patience epochs for SBI training')
+    parser.add_argument('--lr', type=float, default=5e-4, help='Learning rate for SBI neural net')
     parser.add_argument('--use_combined_loss', default=False, action=argparse.BooleanOptionalAction, help='Use combined loss to train the neural net?')
     parser.add_argument('--optimize', default=False, action=argparse.BooleanOptionalAction, help='Optimize hyperparameters using Optuna?')
     parser.add_argument('--optim_ntrials', type=int, default=30, help='Number of Optuna trials to run')
@@ -490,11 +491,24 @@ class sbifit(object):
             train_set = pd.concat([params, y_phot], axis=1)
             train_set.to_csv(load_train, index=False)
     
-    def baseline_sbi_model(self, prior_type='independent', augment_train=False, augment_size=int(3e5), 
+    def baseline_sbi_model(self, config=None, prior_type='independent', augment_train=False, augment_size=int(3e5), 
                            clip_bright=False, flow_model='nsf', lr=5e-4, hidden_features=15, ntransforms=3, nbins=10,
                            use_combined_loss=False, batch_size=256, valfrac=0.1, stop_epochs=50, noise_floor=0.01,
                            savepath=None, max_num_epochs=1000, use_trackio=True, train_stdout_mode='newline'):
         assert self.rsgloader.rsgcat is not None
+
+        if config is not None:
+            with open(config) as f:
+                sbi_config = json.load(f)
+            prior_type = sbi_config['prior_type']
+            augment_train = bool(sbi_config['augment_train'])
+            augment_size = sbi_config['ntrain']
+            flow_model, hidden_features, ntransforms, nbins = sbi_config['flow_model'], sbi_config['hidden_features'], \
+                                                              sbi_config['ntransforms'], sbi_config['nbins_nsf']
+            batch_size = sbi_config['batch_size']
+            stop_epochs = sbi_config['patience']
+            use_combined_loss = bool(sbi_config['use_combined_loss'])
+            lr = sbi_config['lr']
 
         self.load_training_set(augment_train=augment_train, augment_size=augment_size, clip_bright=clip_bright, 
                                noise_floor=noise_floor)
@@ -529,20 +543,21 @@ class sbifit(object):
         anpe.append_simulations(x_tensor, y_tensor)
 
         # define SBI config
-        sbi_config = {
-            'galaxy': self.rsgloader.gal,
-            'prior_type': prior_type,
-            'augment_train': str(augment_train),
-            'flow_model': flow_model,
-            "hidden_features":hidden_features,
-            "ntransforms": ntransforms,
-            "nbins_nsf": nbins,
-            "batch_size": batch_size,
-            "use_combined_loss": str(use_combined_loss),
-            "patience": stop_epochs,
-            "lr": lr,
-            "ntrain": len(self.x_train),
-        }
+        if config is None:
+            sbi_config = {
+                'galaxy': self.rsgloader.gal,
+                'prior_type': prior_type,
+                'augment_train': str(augment_train),
+                'flow_model': flow_model,
+                "hidden_features":hidden_features,
+                "ntransforms": ntransforms,
+                "nbins_nsf": nbins,
+                "batch_size": batch_size,
+                "use_combined_loss": str(use_combined_loss),
+                "patience": stop_epochs,
+                "lr": lr,
+                "ntrain": len(self.x_train),
+            }
 
         if savepath is None:
             self.savepath = self.procdir / f"npe_{self.model_id_from_config(config=sbi_config, n_chars=8)}.pt"
@@ -584,19 +599,29 @@ class sbifit(object):
 
         return hatp_x_y
     
-    def setup_optuna(self, ncores=1):
+    def setup_optuna(self, ncores=1, opt_direction=['minimize', 'maximize']):
         if self.procdir.name.endswith('sbi'):
             self.procdir = Path(str(self.procdir).replace('sbi', 'sbi_opt'))
         self.procdir.mkdir(parents=True, exist_ok=True)
 
         persistent_path = self.procdir / f'{self.rsgloader.gal}_opt_study.db'
-        self.opt_url = create_sqlite_db(persistent_path, self.logger)
+        self.opt_url = create_sqlite_db(persistent_path)
+        self.logger.info(f'Study storage: {self.opt_url}')
         storage = optuna.storages.RDBStorage(url = self.opt_url, 
                                              engine_kwargs = {'pool_size' : ncores, 'max_overflow' : 0})
+        
+        self.opt_direction = opt_direction
+        if isinstance(self.opt_direction, (list, tuple)):
+            directions = copy.deepcopy(self.opt_direction)
+            direction = None
+        else:
+            directions = None
+            direction = copy.deepcopy(self.opt_direction)
 
         study = optuna.create_study(study_name=f'{self.rsgloader.gal}_sbi', 
                                                   storage=storage,
-                                                  direction='minimize',
+                                                  direction=direction,
+                                                  directions=directions,
                                                   load_if_exists=True,
                                                   pruner=optuna.pruners.MedianPruner(n_startup_trials=5, n_warmup_steps=40, interval_steps=5))
 
@@ -697,8 +722,11 @@ class sbifit(object):
             return 10.0
         logprob = logprob[~prob_mask]
         mean_lp = np.mean(logprob)
-        objective = rank_dev - _lambda * mean_lp
         self.logger.info(f'Metrics for trial {trial.number}: log(rank) = {rank_dev}, log(prob) = {mean_lp}')
+        if isinstance(self.opt_direction, (list, tuple)):
+            objective = (rank_dev, mean_lp)
+        else:
+            objective = rank_dev - _lambda * mean_lp
         return objective
     
     def log_optuna_results(self):
@@ -712,12 +740,13 @@ class sbifit(object):
         self.logger.info(f"  Number of complete trials: {len(complete_trials)}")
 
         self.logger.info("Best trial:")
-        trial = study.best_trial
+        trials = study.best_trials
 
-        self.logger.info(f"  Value: {trial.value}")
-        self.logger.info("  Params: ")
-        for key, value in trial.params.items():
-            self.logger.info(f"    {key}: {value}")
+        for trial_ in trials:
+            self.logger.info(f"  Values: {trial_.values}")
+            self.logger.info("  Params: ")
+            for key, value in trial_.params.items():
+                self.logger.info(f"    {key}: {value}")
 
         study_path = self.procdir / f"{self.rsgloader.gal}_optuna_study.pkl"
         pickle.dump(study, open(study_path, 'wb'))
@@ -827,10 +856,7 @@ class sbifit(object):
             i = xs[idx]
             self.hatp_x_y.set_default_x(i)
             samp = self.hatp_x_y.sample((num_posterior_samples,), show_progress_bars=False)
-            # lp = self.hatp_x_y.log_prob(samp)
-            # samp = samp[lp > torch.quantile(lp, 0.1)].numpy()
-            # lp = lp[lp > torch.quantile(lp, 0.1)].numpy()
-            # lp = 10**lp
+            # lp = 10 ** (self.hatp_x_y.log_prob(samp))
             med = np.percentile(samp, 50, axis=0)
             p16, p84 = np.percentile(samp, [16, 84], axis=0)
             truths.append(thetas[idx])
@@ -869,6 +895,9 @@ if __name__ == '__main__':
     parser = create_parser()
     args = parser.parse_args()
 
+    if args.optimize:
+        args.thread_lock = True
+
     if args.thread_lock:
         import os
         os.environ["OMP_NUM_THREADS"] = "1"
@@ -902,12 +931,12 @@ if __name__ == '__main__':
 
     if not args.optimize:
         hatp_x_y = sedfit.baseline_sbi_model(prior_type='independent', augment_train=args.aug_train, augment_size=int(args.aug_size), 
-                                            clip_bright=args.clip_bright, flow_model=args.flow_model, hidden_features=args.hidden_features, 
-                                            ntransforms=args.ntransforms, nbins=args.nbins, use_combined_loss=args.use_combined_loss,
-                                            batch_size=args.batch_size, valfrac=0.1, stop_epochs=args.stop_epochs)
+                                             flow_model=args.flow_model, hidden_features=args.hidden_features, ntransforms=args.ntransforms, 
+                                             nbins=args.nbins, lr=args.lr, use_combined_loss=args.use_combined_loss, batch_size=args.batch_size, 
+                                             valfrac=0.1, stop_epochs=args.stop_epochs)
         
     elif args.optimize:
-        study = sedfit.setup_optuna(int(args.ncores))
+        study = sedfit.setup_optuna(int(args.ncores), opt_direction=['minimize', 'maximize'])
         sedfit.load_training_set(augment_train=True, augment_size=int(1e5), noise_floor=0.01)
 
         tune_param_dict = {
@@ -925,7 +954,7 @@ if __name__ == '__main__':
             "flow_model": "nsf",
             "use_combined_loss": True,
             "train_stdout_mode": 'silent',
-            "max_num_epochs": 300,
+            "max_num_epochs": 10,
             "use_trackio": False
         }
 
