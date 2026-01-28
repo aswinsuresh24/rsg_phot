@@ -463,6 +463,7 @@ class sbifit(object):
             self.x_train = params.to_numpy(dtype=np.float32)
             self.y_train = phot.to_numpy(dtype=np.float32)
         else:
+            #BUG: add lock file to prevent training set from being overwritten during training
             self.logger.info(f'Training set does not exist; Will be saved at {str(load_train.resolve())}')
             train = pd.read_csv(self.training_set_fname)
             if clip_bright:
@@ -545,13 +546,13 @@ class sbifit(object):
             sbi_config = {
                 'galaxy': self.rsgloader.gal,
                 'prior_type': prior_type,
-                'augment_train': str(augment_train),
+                'augment_train': augment_train,
                 'flow_model': flow_model,
                 "hidden_features":hidden_features,
                 "ntransforms": ntransforms,
                 "nbins_nsf": nbins,
                 "batch_size": batch_size,
-                "use_combined_loss": str(use_combined_loss),
+                "use_combined_loss": use_combined_loss,
                 "patience": stop_epochs,
                 "lr": lr,
                 "ntrain": len(self.x_train),
@@ -947,24 +948,24 @@ if __name__ == '__main__':
         
     elif args.optimize:
         study = sedfit.setup_optuna(int(args.ncores), opt_direction=['minimize', 'maximize'])
-        sedfit.load_training_set(augment_train=True, augment_size=int(1e5), noise_floor=0.01)
+        sedfit.load_training_set(augment_train=False, augment_size=int(3e5), noise_floor=0.01)
 
         tune_param_dict = {
             "hidden_features": [10, 60],
             "ntransforms": [2, 20],
-            "nbins": [5, 20],
+            "nbins": [5, 30],
             "batch_size": [32, 64, 128, 256, 512],
-            "stop_epochs": [20, 100],
+            "stop_epochs": [20, 50],
             "lr": [1e-4, 1e-2]
         }
         fixed_hyperparameters = {
             "prior_type":'independent',
-            "augment_train":True,
-            "augment_size":int(1e5),
+            "augment_train":False,
+            "augment_size":int(3e5),
             "flow_model": "nsf",
             "use_combined_loss": True,
             "train_stdout_mode": 'silent',
-            "max_num_epochs": 300,
+            "max_num_epochs": 400,
             "use_trackio": False
         }
 
