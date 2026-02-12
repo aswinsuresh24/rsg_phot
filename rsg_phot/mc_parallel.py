@@ -487,7 +487,7 @@ class mcmcfit(object):
 
         argument_list = []
         for idx_ in self.rsgcat.index:
-            if self.redo_mcmc or not (self.rsgloader.backend_dir / self.rsgloader.gal.upper()+'_'+str(int(idx_))+'_'+self.rsgloader.modeltype+'.h5').exists(): 
+            if self.redo_mcmc or not (self.rsgloader.backend_dir / str(self.rsgloader.gal.upper()+'_'+str(int(idx_))+'_'+self.rsgloader.modeltype+'.h5')).exists(): 
                 argument_list.append([self.rsgcat.loc[idx_]])
             else:
                 continue
@@ -511,6 +511,13 @@ if __name__=='__main__':
     parser = create_parser()
     args = parser.parse_args()
 
+    if args.mcmc_fit:
+        import os
+        os.environ["OMP_NUM_THREADS"] = "1"
+        os.environ["MKL_NUM_THREADS"] = "1"
+        os.environ["OPENBLAS_NUM_THREADS"] = "1"
+        os.environ["NUMEXPR_NUM_THREADS"] = "1"
+
     if args.rsgcat is not None:
         rsgcat_in = pd.read_csv(args.rsgcat)
     else: rsgcat_in = None
@@ -532,5 +539,5 @@ if __name__=='__main__':
 
     if args.mcmc_fit:
         sedfit = mcmcfit(rsgloader, ncores=args.ncores, verbose=False, 
-                        modeltype=args.modeltype, comp=args.comp, redo_mcmc=args.redo)
+                        modeltype=args.modeltype, comp=args.comp, redo_mcmc=args.redo_mcmc)
         sedfit.run_mcmc_parallel()

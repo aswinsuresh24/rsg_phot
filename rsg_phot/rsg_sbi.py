@@ -338,25 +338,51 @@ class sbifit(object):
             train_err[:, i] = np.minimum(train_err[:, i], 0.6)
 
         return train_err
-
     
-    def toy_noise_model(self, train:pd.DataFrame, noise_floor:float=0.01, interp_bins:int=30, fit:bool=False):
+    def toy_noise_model(self, interp_bins:int=30):
         """
-        toy Gaussian noise model for SBI++
+        toy non-Gaussian noise model for SBI++
         
-        :param train: pd.DataFrame
-            training set
-        :param noise_floor: float, default=0.01
-            noise floor to be added in quadrature with
-            observed error
         :param interp_bins: int, default=30
-            number of bins to interpolate mean and 1 sigma
+            number of bins to interpolate mean and 3-sigma
             scatter of error bars
-        :param fit: bool, default=False
-            fit to broken power law instead of interpolating?
-
         """
-        raise NotImplementedError()
+
+        if not self.load_train.exists():
+            raise ValueError(f'Training set {str(self.load_train.resolve())} does not exist. Either train \
+                               a baseline SBI model or read the trained model')
+        
+        try:
+            train = pd.read_csv(self.load_train)
+        except Exception as e:
+            self.logger.info(traceback.format_exc())
+            raise ValueError(f'Could not load training set {str(self.load_train.resolve())} due to the above exception')
+        
+        filters = self.rsgloader.cols['flts'][self.rsgloader.flt_mask]
+        toy_medsigs, toy_stdsigs = [], []
+
+        for f_ in filters:
+            mag, err = train[f_].values, train[f'{f_}_err'].values
+            vmin, vmax = np.min(mag), np.max(mag)
+            mag_bins = np.linspace(vmin, vmax, interp_bins+1)
+            bin_centers = 0.5 * (mag_bins[1:] + mag_bins[:-1])
+
+            med_sigs, std_sigs = [], []
+
+            for j in range(interp_bins):
+                ebin_ = err[(mag >= mag_bins[j]) & (mag < mag_bins[j+1])]
+                sig_e = np.percentile(ebin_, 99.7)
+                mu_e = np.percentile(ebin_, 50)
+                med_sigs.append(mu_e)
+                std_sigs.append(sig_e - mu_e)
+            med_sigs, std_sigs = np.array(med_sigs), np.array(std_sigs)
+
+            mu_interp = interpolate.InterpolatedUnivariateSpline(bin_centers, np.array(med_sigs), k=3, ext=3)
+            sig_interp = interpolate.InterpolatedUnivariateSpline(bin_centers, np.array(std_sigs), k=3, ext=3)
+            toy_medsigs.append(mu_interp)
+            toy_stdsigs.append(sig_interp)
+
+        return toy_medsigs, toy_stdsigs
     
     def sim_obs_noise(self, ymags, sim_type='chisq'):
         rsgcat = self.rsgloader.rsgcat
@@ -452,19 +478,18 @@ class sbifit(object):
 
         ndim = int(len(self.gen_mc_obj.model_fit_params))
         if augment_train:
-            load_train = self.procdir / f'train_{self.rsgloader.gal}_aug.csv'
+            self.load_train = self.procdir / f'train_{self.rsgloader.gal}_aug.csv'
         else:
-            load_train = self.procdir / f'train_{self.rsgloader.gal}.csv'
-        if load_train.exists():
-            self.logger.info(f'Training set exists; Loading x and y train from {str(load_train.resolve())}')
-            train_set = pd.read_csv(load_train)
+            self.load_train = self.procdir / f'train_{self.rsgloader.gal}.csv'
+        if self.load_train.exists():
+            self.logger.info(f'Training set exists; Loading x and y train from {str(self.load_train.resolve())}')
+            train_set = pd.read_csv(self.load_train)
             params = train_set[train_set.columns[:ndim]]
             phot = train_set[train_set.columns[ndim:]]
             self.x_train = params.to_numpy(dtype=np.float32)
             self.y_train = phot.to_numpy(dtype=np.float32)
         else:
-            #BUG: add lock file to prevent training set from being overwritten during training
-            self.logger.info(f'Training set does not exist; Will be saved at {str(load_train.resolve())}')
+            self.logger.info(f'Training set does not exist; Will be saved at {str(self.load_train.resolve())}')
             train = pd.read_csv(self.training_set_fname)
             if clip_bright:
                 train = self.clip_bright_train_samples(train)
@@ -490,7 +515,7 @@ class sbifit(object):
             self.y_train = y_phot.to_numpy(dtype=np.float32)
 
             train_set = pd.concat([params, y_phot], axis=1)
-            train_set.to_csv(load_train, index=False)
+            train_set.to_csv(self.load_train, index=False)
     
     def baseline_sbi_model(self, sbi_config=None, prior_type='independent', augment_train=False, augment_size=int(3e5), 
                            clip_bright=False, flow_model='nsf', lr=5e-4, hidden_features=15, ntransforms=3, nbins=10,
@@ -558,8 +583,9 @@ class sbifit(object):
                 "ntrain": len(self.x_train),
             }
 
+        self.config_id = self.model_id_from_config(config=sbi_config, n_chars=8)
         if savepath is None:
-            self.savepath = self.procdir / f"npe_{self.model_id_from_config(config=sbi_config, n_chars=8)}.pt"
+            self.savepath = self.procdir / f"npe_{self.config_id}.pt"
         else: 
             self.savepath = Path(savepath)
 
@@ -675,6 +701,7 @@ class sbifit(object):
             param_dict.update(fixed_hyperparameters)
             self.logger.info(f'Trial {trial.number}: Testing parameters: {param_dict}')
             obj = self.run_evaluate_sbi_model(trial, param_dict, self.x_test, self.y_test, num_posterior_samples=2500, _lambda=1e-3)
+            trial.set_user_attr("config_id", self.config_id)
             return obj
         
         study.optimize(_objective_fn, n_trials=n_trials, gc_after_trial=True)
