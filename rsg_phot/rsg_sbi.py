@@ -944,7 +944,7 @@ class sbifit(object):
                                               # increase the chi^2 in the case of insufficient neighbors
                           'tmax_per_obj' : 10, # max time spent on one object / mc sample in secs
                           'tmax_all' : 1,      # max time spent on all mc samples in mins
-                          'verbose' : True,
+                          'verbose' : False,
                          }
 
         with open(self.procdir / f'npe_{sbi_config_id}.json') as f:
@@ -973,7 +973,7 @@ class sbifit(object):
         mcol_, ecol_ = self.rsgloader.cols['magcols'][self.rsgloader.flt_mask], self.rsgloader.cols['errcols'][self.rsgloader.flt_mask]
         tqdm_out = TqdmToLogger(self.logger, level=logging.INFO)
         self.logger.info(f'Running inference on {len(sbicat)} sources for galaxy {self.rsgloader.gal}')
-        for idx_ in tqdm(sbicat.index[:500], file=tqdm_out, total=len(sbicat), mininterval=20):
+        for idx_ in tqdm(sbicat.index, file=tqdm_out, total=len(sbicat), mininterval=20):
             col = sbicat.loc[idx_]
             obsmag = np.array(col[mcol_], dtype=float)
             missing_mask = obsmag > 90
