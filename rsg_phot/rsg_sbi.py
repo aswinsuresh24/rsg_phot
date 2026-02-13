@@ -43,7 +43,9 @@ from joblib import parallel_backend
 
 from rsg_phot.mcmc import mcmc
 from rsg_phot.mc_parallel import rsg_dataloader
-from rsg_phot.utils import create_sqlite_db, stdout_mode
+from rsg_phot.utils import create_sqlite_db, stdout_mode, TqdmToLogger
+
+logging.getLogger("root").setLevel(logging.ERROR)
 
 def create_parser():
     '''
@@ -87,7 +89,9 @@ def create_parser():
     parser.add_argument('--use_combined_loss', default=False, action=argparse.BooleanOptionalAction, help='Use combined loss to train the neural net?')
     parser.add_argument('--optimize', default=False, action=argparse.BooleanOptionalAction, help='Optimize hyperparameters using Optuna?')
     parser.add_argument('--optim_ntrials', type=int, default=30, help='Number of Optuna trials to run')
-    parser.add_argument('--config', type=str, default=None, help='Config file for group SBI runs')
+    parser.add_argument('--train', default=False, action=argparse.BooleanOptionalAction, help='Train single SBI model?')
+    parser.add_argument('--config_id', type=str, default=None, help='Config ID for loading SBI config from json file')
+    parser.add_argument('--infer', default=False, action=argparse.BooleanOptionalAction, help='Run inference?')
 
     return parser
 
@@ -349,7 +353,7 @@ class sbifit(object):
         """
 
         if not self.load_train.exists():
-            raise ValueError(f'Training set {str(self.load_train.resolve())} does not exist. Either train \
+            raise FileNotFoundError(f'Training set {str(self.load_train.resolve())} does not exist. Either train \
                                a baseline SBI model or read the trained model')
         
         try:
@@ -914,14 +918,102 @@ class sbifit(object):
                           num_workers=num_workers)
         self.test_accuracy(nsamp=num_test_samples, num_posterior_samples=num_posterior_samples)
     
-    def infer(self):
-        raise NotImplementedError()
+    def infer(self, sbi_config_id, run_params=None):
+        """
+        Infer parameters for all objects in the RSG catalog using SBI++ with the trained SBI model 
+        corresponding to sbi_config_id.
+        
+        :param sbi_config_id: 
+            config_id corresponding to the trained SBI model to use for inference, 
+            which is generated using model_id_from_config
+
+        :param run_params: dict, optional
+            Dictionary of parameters for controlling the inference run. If None, 
+            default parameters will be used.
+
+        Example usage:
+            sbi_config_id = 'ef220e94' 
+            self.infer(sbi_config_id, run_params=None)
+        """
+        if run_params is None:
+            run_params = {'nmc' : 50,    # number of MC samples
+                          'nposterior' : 50,    # number of posterior samples per MC drawn
+                          'np_baseline' : 2500,  # number of posterior samples used in baseline SBI
+                          'ini_chi2' : 5,       # chi^2 cut usedi in the nearest neighbor search
+                          'max_chi2' : 500,     # the maximum chi^2 to reach in case we incremently 
+                                              # increase the chi^2 in the case of insufficient neighbors
+                          'tmax_per_obj' : 10, # max time spent on one object / mc sample in secs
+                          'tmax_all' : 1,      # max time spent on all mc samples in mins
+                          'verbose' : True,
+                         }
+
+        with open(self.procdir / f'npe_{sbi_config_id}.json') as f:
+            sbi_config = json.load(f)
+        hatp_x_y = self.baseline_sbi_model(sbi_config=sbi_config)
+        toy_medsigs, toy_stdsigs = self.toy_noise_model(interp_bins=30)
+
+        sbi_params = {
+            'y_train': self.y_train,
+            'hatp_x_y': hatp_x_y,
+            'toynoise_meds_sigs': toy_medsigs,
+            'toynoise_stds_sigs': toy_stdsigs
+        }
+
+        sbicat = self.rsgloader.rsgcat.copy()
+
+        for p_ in self.gen_mc_obj.model_fit_params:
+            sbicat.loc[:, [p_+'_median', p_+'_elow', p_+'_eup']] = np.nan
+        sbicat.loc[:, ['chi_post', 'sq_err_post']] = np.nan
+        sbicat.loc[:, ['use_res', 'timeout', 'use_res_missing', 'use_res_noisy', \
+                       'noisy_data',  'missing_data', 'nsamp_missing', 'nsamp_noisy']] = np.nan
+        
+        savedir = self.procdir.parent / 'sbi_backend'
+        savedir.mkdir(parents=True, exist_ok=True)
+
+        mcol_, ecol_ = self.rsgloader.cols['magcols'][self.rsgloader.flt_mask], self.rsgloader.cols['errcols'][self.rsgloader.flt_mask]
+        tqdm_out = TqdmToLogger(self.logger, level=logging.INFO)
+        self.logger.info(f'Running inference on {len(sbicat)} sources for galaxy {self.rsgloader.gal}')
+        for idx_ in tqdm(sbicat.index[:500], file=tqdm_out, total=len(sbicat), mininterval=20):
+            col = sbicat.loc[idx_]
+            obsmag = np.array(col[mcol_], dtype=float)
+            missing_mask = obsmag > 90
+            obsmag -= (self.rsgloader.gen_mc_obj.dm+30)
+            obserr = np.array(col[ecol_], dtype=float)
+            obserr = np.sqrt(obserr**2 + 0.01**2)
+
+            obsmag[missing_mask] = np.nan
+            obserr[missing_mask] = np.nan
+
+            obs = {'mags': obsmag,
+                   'mags_unc': obserr}
+            samp, obs_, flags = sbi_pp.sbi_pp(obs=obs, run_params=run_params, sbi_params=sbi_params)
+
+            samp_savepath = savedir / f'{self.rsgloader.gal}_{idx_}.p'
+            with open(samp_savepath, 'wb') as f:
+                pickle.dump({'samples': samp, 'obs': obs_}, f)
+
+            samp_median = np.median(samp, axis=0)
+            samp_lower = np.percentile(samp, 16, axis=0)
+            samp_upper = np.percentile(samp, 84, axis=0)
+            sbicat.loc[idx_, [p_+'_median' for p_ in self.gen_mc_obj.model_fit_params]] = samp_median
+            sbicat.loc[idx_, [p_+'_elow' for p_ in self.gen_mc_obj.model_fit_params]] = samp_median - samp_lower
+            sbicat.loc[idx_, [p_+'_eup' for p_ in self.gen_mc_obj.model_fit_params]] = samp_upper - samp_median
+            sbicat.loc[idx_, flags.keys()] = flags.values()
+
+            model_mag = np.array([self.gen_mc_obj.model[f](samp_median).flatten()[0] for f in self.rsgloader.cols['flts'][self.rsgloader.flt_mask]]) + self.gen_mc_obj.dm
+            model_mag = model_mag[~missing_mask]
+            chisq = np.nansum(((obsmag[~missing_mask] - model_mag) / obserr[~missing_mask])**2) / np.sum(~missing_mask)
+            abs_err = np.nansum((obsmag[~missing_mask] - model_mag)**2) / np.sum(~missing_mask)
+            sbicat.loc[idx_, 'chi_post'] = chisq
+            sbicat.loc[idx_, 'sq_err_post'] = abs_err
+
+        sbicat.to_csv(self.procdir.parent / f'{self.rsgloader.gal}_sbi_cat.csv', index=False)
 
 if __name__ == '__main__':
     parser = create_parser()
     args = parser.parse_args()
 
-    if (args.optimize) or (args.config is not None):
+    if (args.optimize) | (args.ncores > 1):
         import os
         os.environ["OMP_NUM_THREADS"] = "1"
         os.environ["MKL_NUM_THREADS"] = "1"
@@ -952,26 +1044,25 @@ if __name__ == '__main__':
         sedfit.sim_training_set(ntrain=int(args.ntrain))
         sys.exit()
 
-    if not args.optimize:
-        if args.config is None:
-            hatp_x_y = sedfit.baseline_sbi_model(prior_type='independent', augment_train=args.aug_train, augment_size=int(args.aug_size), 
-                                                flow_model=args.flow_model, hidden_features=args.hidden_features, ntransforms=args.ntransforms, 
-                                                nbins=args.nbins, lr=args.lr, use_combined_loss=args.use_combined_loss, batch_size=args.batch_size, 
-                                                valfrac=0.1, stop_epochs=args.stop_epochs)
-        else:
-            with open(args.config) as f:
-                param_dict = json.load(f)
-            keys = np.array(list(param_dict.keys()), dtype=str)
-            values = np.array(list(param_dict.values()), dtype=str)
-            configs = []
-            for i in range(values.shape[1]):
-                cfg_ = dict(zip(keys, values[:, i]))
-                cfg_ = {str(k):str(v) for k, v in cfg_.items()}
-                configs.append(cfg_)
-
-            with Pool(processes=args.ncores) as pool:
-                for _ in pool.imap_unordered(sedfit.baseline_sbi_model, configs):
-                    pass
+    if args.config_id is not None:
+        config_path = sedfit.procdir / f'npe_{args.config_id}.json'
+        if not config_path.exists():
+            config_path_alt = sedfit.procdir.parent / 'sbi_opt' / f'npe_{args.config_id}.json'
+            if config_path_alt.exists():
+                config_path = config_path_alt
+                sedfit.procdir = sedfit.procdir.parent / 'sbi_opt'
+            else:
+                raise FileNotFoundError(f'No config file found for config_id {args.config_id} in {sedfit.procdir} or {sedfit.procdir.parent / "sbi_opt"}')
+        with open(config_path) as f:
+            sbi_config = json.load(f)
+    else:
+            sbi_config = None
+    
+    if args.train:
+        hatp_x_y = sedfit.baseline_sbi_model(sbi_config=sbi_config, prior_type='independent', augment_train=args.aug_train, 
+                                             augment_size=int(args.aug_size), flow_model=args.flow_model, hidden_features=args.hidden_features, 
+                                             ntransforms=args.ntransforms, nbins=args.nbins, lr=args.lr, use_combined_loss=args.use_combined_loss, 
+                                             batch_size=args.batch_size, valfrac=0.1, stop_epochs=args.stop_epochs)
         
     elif args.optimize:
         study = sedfit.setup_optuna(int(args.ncores), opt_direction=['minimize', 'maximize'])
@@ -1010,3 +1101,8 @@ if __name__ == '__main__':
             p.join()
 
         sedfit.log_optuna_results()
+
+    elif args.infer:
+        if args.config_id is None:
+            raise ValueError('Must provide config_id corresponding to trained SBI model to use for inference using --config_id')
+        sedfit.infer(args.config_id)
