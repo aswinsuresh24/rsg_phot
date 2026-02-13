@@ -988,6 +988,9 @@ class sbifit(object):
                 obs = {'mags': obsmag,
                     'mags_unc': obserr}
                 samp, obs_, flags = sbi_pp.sbi_pp(obs=obs, run_params=run_params, sbi_params=sbi_params)
+                if (not flags['use_res']) | (flags['timeout'] == True):
+                    self.logger.info(f'Inference for index {idx_} did not converge or timed out. Skipping.')
+                    continue
 
                 samp_savepath = savedir / f'{self.rsgloader.gal}_{idx_}.p'
                 with open(samp_savepath, 'wb') as f:
