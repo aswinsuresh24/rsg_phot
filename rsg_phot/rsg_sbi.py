@@ -974,38 +974,43 @@ class sbifit(object):
         tqdm_out = TqdmToLogger(self.logger, level=logging.INFO)
         self.logger.info(f'Running inference on {len(sbicat)} sources for galaxy {self.rsgloader.gal}')
         for idx_ in tqdm(sbicat.index, file=tqdm_out, total=len(sbicat), mininterval=20):
-            col = sbicat.loc[idx_]
-            obsmag = np.array(col[mcol_], dtype=float)
-            missing_mask = obsmag > 90
-            obsmag -= (self.rsgloader.gen_mc_obj.dm+30)
-            obserr = np.array(col[ecol_], dtype=float)
-            obserr = np.sqrt(obserr**2 + 0.01**2)
+            try:
+                col = sbicat.loc[idx_]
+                obsmag = np.array(col[mcol_], dtype=float)
+                missing_mask = obsmag > 90
+                obsmag -= (self.rsgloader.gen_mc_obj.dm+30)
+                obserr = np.array(col[ecol_], dtype=float)
+                obserr = np.sqrt(obserr**2 + 0.01**2)
 
-            obsmag[missing_mask] = np.nan
-            obserr[missing_mask] = np.nan
+                obsmag[missing_mask] = np.nan
+                obserr[missing_mask] = np.nan
 
-            obs = {'mags': obsmag,
-                   'mags_unc': obserr}
-            samp, obs_, flags = sbi_pp.sbi_pp(obs=obs, run_params=run_params, sbi_params=sbi_params)
+                obs = {'mags': obsmag,
+                    'mags_unc': obserr}
+                samp, obs_, flags = sbi_pp.sbi_pp(obs=obs, run_params=run_params, sbi_params=sbi_params)
 
-            samp_savepath = savedir / f'{self.rsgloader.gal}_{idx_}.p'
-            with open(samp_savepath, 'wb') as f:
-                pickle.dump({'samples': samp, 'obs': obs_}, f)
+                samp_savepath = savedir / f'{self.rsgloader.gal}_{idx_}.p'
+                with open(samp_savepath, 'wb') as f:
+                    pickle.dump({'samples': samp, 'obs': obs_}, f)
 
-            samp_median = np.median(samp, axis=0)
-            samp_lower = np.percentile(samp, 16, axis=0)
-            samp_upper = np.percentile(samp, 84, axis=0)
-            sbicat.loc[idx_, [p_+'_median' for p_ in self.gen_mc_obj.model_fit_params]] = samp_median
-            sbicat.loc[idx_, [p_+'_elow' for p_ in self.gen_mc_obj.model_fit_params]] = samp_median - samp_lower
-            sbicat.loc[idx_, [p_+'_eup' for p_ in self.gen_mc_obj.model_fit_params]] = samp_upper - samp_median
-            sbicat.loc[idx_, flags.keys()] = flags.values()
+                samp_median = np.median(samp, axis=0)
+                samp_lower = np.percentile(samp, 16, axis=0)
+                samp_upper = np.percentile(samp, 84, axis=0)
+                sbicat.loc[idx_, [p_+'_median' for p_ in self.gen_mc_obj.model_fit_params]] = samp_median
+                sbicat.loc[idx_, [p_+'_elow' for p_ in self.gen_mc_obj.model_fit_params]] = samp_median - samp_lower
+                sbicat.loc[idx_, [p_+'_eup' for p_ in self.gen_mc_obj.model_fit_params]] = samp_upper - samp_median
+                sbicat.loc[idx_, flags.keys()] = flags.values()
 
-            model_mag = np.array([self.gen_mc_obj.model[f](samp_median).flatten()[0] for f in self.rsgloader.cols['flts'][self.rsgloader.flt_mask]]) + self.gen_mc_obj.dm
-            model_mag = model_mag[~missing_mask]
-            chisq = np.nansum(((obsmag[~missing_mask] - model_mag) / obserr[~missing_mask])**2) / np.sum(~missing_mask)
-            abs_err = np.nansum((obsmag[~missing_mask] - model_mag)**2) / np.sum(~missing_mask)
-            sbicat.loc[idx_, 'chi_post'] = chisq
-            sbicat.loc[idx_, 'sq_err_post'] = abs_err
+                model_mag = np.array([self.gen_mc_obj.model[f](samp_median).flatten()[0] for f in self.rsgloader.cols['flts'][self.rsgloader.flt_mask]]) + self.gen_mc_obj.dm
+                model_mag = model_mag[~missing_mask]
+                chisq = np.nansum(((obsmag[~missing_mask] - model_mag) / obserr[~missing_mask])**2) / np.sum(~missing_mask)
+                abs_err = np.nansum((obsmag[~missing_mask] - model_mag)**2) / np.sum(~missing_mask)
+                sbicat.loc[idx_, 'chi_post'] = chisq
+                sbicat.loc[idx_, 'sq_err_post'] = abs_err
+            except Exception as e:
+                self.logger.info(f'Inference failed for index {idx_} with error: {e}')
+                self.logger.info(traceback.format_exc())
+                continue
 
         sbicat.to_csv(self.procdir.parent / f'{self.rsgloader.gal}_sbi_cat.csv', index=False)
 
