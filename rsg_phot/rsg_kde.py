@@ -1,0 +1,325 @@
+import scienceplots
+import numpy as np
+from synphot import SpectralElement
+from synphot.models import Empirical1D
+import os, glob
+import emcee
+import progressbar
+import sys
+import astropy.units as u
+import astropy.constants as const
+import traceback
+import pickle
+from astropy.io import fits, ascii
+from astropy.stats import sigma_clipped_stats as scs
+from scipy import interpolate
+from scipy.integrate import simpson
+import matplotlib as mpl
+import matplotlib.pyplot as plt
+from plotly import express as px
+from astropy.io.misc.hdf5 import read_table_hdf5
+import pandas as pd
+import itertools
+from tqdm import tqdm
+import corner
+import time
+from scipy.stats import gaussian_kde, norm, skewnorm
+from scipy.optimize import curve_fit
+import torch
+from sbi import utils as sbi_utils
+from sbi.neural_nets import posterior_nn
+from sbi import inference
+from torch.distributions import MultivariateNormal, Exponential, LogNormal
+from sbi.utils import MultipleIndependent, BoxUniform
+from sklearn.metrics import r2_score
+from sklearn.metrics import root_mean_squared_error as rmse
+from sklearn.preprocessing import StandardScaler
+from sklearn.model_selection import GridSearchCV
+from sklearn.neighbors import KernelDensity
+from sklearn.decomposition import PCA
+from plotly import express as px
+import signal
+import copy
+from pathlib import Path
+import optuna
+import json
+
+import rsg_phot.dust as dust
+from rsg_phot.mcmc import mcmc
+from rsg_phot.mc_parallel import rsg_dataloader, mcmcfit
+from rsg_phot.rsg_sbi import sbifit
+from rsg_phot import sbi_pp
+
+ALL_CONFIGS = {
+    'ngc5236': {'rsgcat': os.path.join(os.pardir, 'data/dolphot/ngc5236/ngc5236_sil_rsgcat.csv'),
+                'load_args': {'gal':'ngc5236',
+                              'procdir':os.path.join(os.pardir, 'data/dolphot/ngc5236'), 'photfile_path':None,
+                              'dm':28.46, 'dmerr':0.05, 'z':-0.25, 'trgb':('F090W', 24.52),
+                              'modeltype':'MARCS', 'comp':'sil',
+                              'keep_narrow':False},
+                'model': "957a9f22"},
+    'ngc5194': {'rsgcat': os.path.join(os.pardir, 'data/dolphot/ngc5194/ngc5194_sil_rsgcat.csv'),
+                'load_args': {'gal':'ngc5194',
+                              'procdir':os.path.join(os.pardir, 'data/dolphot/ngc5194'), 'photfile_path':None,
+                              'dm':29.67, 'dmerr':0.02, 'z':0.0, 'trgb':('F200W', 24.2),
+                              'modeltype':'MARCS', 'comp':'sil',
+                              'keep_narrow':False, 'ignore_filts': ['F090W', 'F410M', 'F430M']},
+                'model': "fb3481bf"},
+    'ngc4258': {'rsgcat': os.path.join(os.pardir, 'data/dolphot/ngc4258/ngc4258_sil_rsgcat.csv'),
+                'load_args': {'gal':'ngc4258',
+                              'procdir':os.path.join(os.pardir, 'data/dolphot/ngc4258'), 'photfile_path':None,
+                              'dm':29.397, 'dmerr':0.03, 'z':-0.25, 'trgb':('F090W', 25.055),
+                              'modeltype':'MARCS', 'comp':'sil',
+                              'keep_narrow':False},
+                'model': "ef220e94"},
+    'ngc628': {'rsgcat': os.path.join(os.pardir, 'data/dolphot/ngc628/ngc628_sil_rsgcat.csv'),
+               'load_args': {'gal':'ngc628',
+                             'procdir':os.path.join(os.pardir, 'data/dolphot/ngc628'), 'photfile_path':None,
+                             'dm':30.04, 'dmerr':0.125, 'z':-0.25, 'trgb':('F090W', 29.13),
+                             'modeltype':'MARCS', 'comp':'sil',
+                             'keep_narrow':False, 'ignore_filts':['F090W', 'F140M', 'F182M', 'F410M', 'F430M', 'F480M']},
+               'model': "89285257"},
+    'ngc5643': {'rsgcat': os.path.join(os.pardir, 'data/dolphot/ngc5643/ngc5643_sil_rsgcat.csv'),
+                'load_args': {'gal':'ngc5643',
+                              'procdir':os.path.join(os.pardir, 'data/dolphot/ngc5643'), 'photfile_path':None,
+                              'dm':30.57, 'dmerr':0.06, 'z':-0.25, 'trgb':('F090W', 26.20),
+                              'modeltype':'MARCS', 'comp':'sil',
+                              'keep_narrow':False, 'ignore_filts':['F300M']},
+                'model': "be8ad86d"},
+    'ngc7320': {'rsgcat': os.path.join(os.pardir, 'data/dolphot/ngc7320/ngc7320_sil_rsgcat.csv'),
+                'load_args': {'gal':'ngc7320',
+                              'procdir':os.path.join(os.pardir, 'data/dolphot/ngc7320'), 'photfile_path':None,
+                              'dm':30.57, 'dmerr':0.5, 'z':-0.25, 'trgb':('F150W', 27.0),
+                              'modeltype':'MARCS', 'comp':'sil',
+                              'keep_narrow':False},
+                'model': "c74a700a"},
+    'ngc1367': {'rsgcat': os.path.join(os.pardir, 'data/dolphot/ngc1367/ngc1367_sil_rsgcat.csv'),
+                'load_args': {'gal':'ngc1367',
+                              'procdir':os.path.join(os.pardir, 'data/dolphot/ngc1367'), 'photfile_path':None,
+                              'dm':30.40, 'dmerr':0.07, 'z':0.00, 'trgb':('F090W', 29.13),
+                              'modeltype':'MARCS', 'comp':'sil',
+                              'keep_narrow':False, 'ignore_filts':['F300M']},
+                'model': "27370b04"},
+    'ngc1365': {'rsgcat': os.path.join(os.pardir, 'data/dolphot/ngc1365/ngc1365_sil_rsgcat.csv'),
+                'load_args': {'gal':'ngc1365',
+                              'procdir':os.path.join(os.pardir, 'data/dolphot/ngc1365'), 'photfile_path':None,
+                              'dm':31.29, 'dmerr':0.065, 'z':-0.25, 'trgb':('F090W', 27.34),
+                              'modeltype':'MARCS', 'comp':'sil',
+                              'keep_narrow':False},
+                'model': "05602ed7"},
+    'ngc4536': {'rsgcat': os.path.join(os.pardir, 'data/dolphot/ngc4536/ngc4536_sil_rsgcat.csv'),
+                'load_args': {'gal':'ngc4536',
+                              'procdir':os.path.join(os.pardir, 'data/dolphot/ngc4536'), 'photfile_path':None,
+                              'dm':30.99, 'dmerr':0.06, 'z':-0.25, 'trgb':('F090W', 27.01),
+                              'modeltype':'MARCS', 'comp':'sil',
+                              'keep_narrow':False, 'ignore_filts': ['F115W', 'F444W']},
+                'model': "9badc531"},
+    'ngc5457': {'rsgcat': os.path.join(os.pardir, 'data/dolphot/ngc5457/ngc5457_sil_rsgcat.csv'),
+                'load_args': {'gal':'ngc5457',
+                              'procdir':os.path.join(os.pardir, 'data/dolphot/ngc5457'), 'photfile_path':None,
+                              'dm':29.07, 'dmerr':0.05, 'z':-0.25, 'trgb':('F090W', 25.04),
+                              'modeltype':'MARCS', 'comp':'sil',
+                              'keep_narrow':False, 'ignore_filts':['F322W2']},
+                'model': "c2583613"},
+    'ngc4449': {'rsgcat': os.path.join(os.pardir, 'data/dolphot/ngc4449/ngc4449_ngc4485_combined_rsgcat.csv'),
+                'load_args': {'gal':'ngc4449', 'procdir':os.path.join(os.pardir, 'data/dolphot/ngc4449'), 'photfile_path':None,
+                              'dm':0.0, 'dmerr':0.32, 'z':-0.25, 'trgb':('F090W', -2.91),
+                              'modeltype':'MARCS', 'comp':'sil', 'keep_narrow':False},
+                'model': "f607c658"}
+}
+
+def lin(x, m, c): 
+    return m*x+c
+
+class AdaptiveKDE:
+    """
+    3-class KDE classifier with pseudo-adaptive bandwidth
+    """
+    def __init__(self, alpha=0.5):
+        self.alpha = alpha
+        self.scaler = StandardScaler()
+        self.kdes = {}
+        self.weights_dict = {}
+    
+    def fit(self, X, y, class_names=['RSG', 'AGB', 'Blue']):
+        """Fit weighted KDEs (pseudo-adaptive)"""
+        X_scaled = self.scaler.fit_transform(X)
+        
+        for class_idx, class_name in enumerate(class_names):
+            X_class = X_scaled[y == class_idx]
+            n = len(X_class)
+            
+            # Pilot KDE
+            pilot_kde = gaussian_kde(X_class.T, bw_method='scott')
+            pilot_densities = pilot_kde(X_class.T)
+            
+            # Abramson weights
+            g = np.exp(np.mean(np.log(pilot_densities + 1e-10)))
+            weights = np.power(pilot_densities / g, -self.alpha)
+            weights = weights / weights.sum() * n
+            
+            # Weighted KDE
+            kde = gaussian_kde(X_class.T, bw_method='scott', weights=weights)
+            
+            self.kdes[class_idx] = kde
+            self.weights_dict[class_idx] = weights
+                    
+        return self
+    
+    def predict_proba(self, X):
+        """Predict on arbitrary points"""
+        X_scaled = self.scaler.transform(X)
+        n_samples = len(X)
+        n_classes = len(self.kdes)
+        
+        likelihoods = np.zeros((n_samples, n_classes))
+        for class_idx, kde in self.kdes.items():
+            # Direct evaluation on arbitrary points
+            likelihoods[:, class_idx] = kde(X_scaled.T)
+        
+        # Normalize
+        probs = likelihoods / likelihoods.sum(axis=1, keepdims=True)
+        return probs
+
+
+class star_class(object):
+    def __init__(self, gal:str, sbicat_path:Path, f1:str, f2:str):
+        self.gal = gal
+        if not sbicat_path.exists():
+            raise FileNotFoundError(f"Catalog {sbicat_path} not found")
+        self.df = pd.read_csv(sbicat_path)
+        disc_ = (self.df['use_res'].isna()) | (self.df['use_res'] == 0) | (self.df['temperature_median'].isna()) | \
+                (self.df['luminosity_median'].isna()) | (self.df['tau_V_median'].isna())
+        self.df = self.df[~disc_]
+        if 'Unnamed: 0' in self.df.columns:
+            self.df = self.df.drop(columns=['Unnamed: 0'])
+        if (f'{f1}_mag' not in self.df.columns):
+            raise ValueError(f'Filter {f1} not found')
+        if (f'{f2}_mag' not in self.df.columns):
+            raise ValueError(f'Filter {f2} not found')
+        self.f1 = f1
+        self.f2 = f2
+        self.cmd_mask = (self.df[f'{self.f1}_mag'] > 10) & (self.df[f'{self.f1}_mag'] < 32)  & \
+                        (self.df[f'{self.f2}_mag'] > 10) & (self.df[f'{self.f2}_mag'] < 32)
+        self.rsgloader, self.sedfit, self.sedfit_mc, self.hatp_x_y = self.load_gal(self.gal)
+        self.logger = self.rsgloader.logger
+
+    def load_gal(self, gal:str):
+        config = ALL_CONFIGS[gal]
+        rsgcat = pd.read_csv(config['rsgcat'])
+        if any(rsgcat['lum_chisq'] > 100):
+            rsgcat['lum_chisq'] = np.log10(rsgcat['lum_chisq'])
+        config['load_args']['rsgcat'] = rsgcat
+        rsgloader = rsg_dataloader(**config['load_args'])
+
+        sedfit = sbifit(rsgloader)
+        sedfit_mc = mcmcfit(rsgloader, ncores=1, verbose=True)
+            
+        config_id = config['model']
+        config_path = sedfit.procdir / f'npe_{config_id}.json'
+        if not config_path.exists():
+            config_path_alt = sedfit.procdir.parent / 'sbi_opt' / f'npe_{config_id}.json'
+            if config_path_alt.exists():
+                config_path = config_path_alt
+                sedfit.procdir = sedfit.procdir.parent / 'sbi_opt'
+            else:
+                raise FileNotFoundError(f'No config file found for config_id {config_id} in {sedfit.procdir} or {sedfit.procdir.parent / "sbi_opt"}')
+        with open(config_path) as f:
+            sbi_config = json.load(f)
+
+        hatp_x_y = sedfit.baseline_sbi_model(sbi_config=sbi_config)
+
+        return rsgloader, sedfit, sedfit_mc, hatp_x_y
+
+    def plot_cmd(self, slopes=None, intercepts=None, lcut=None):
+        rsg_cl = self.df[self.cmd_mask][f'{self.f1}_mag'] - self.df[self.cmd_mask][f'{self.f2}_mag']
+        rsg_m = self.df[self.cmd_mask][f'{self.f2}_mag']
+
+        plt.figure(figsize=(8, 6))
+        plt.hexbin(rsg_cl, rsg_m, cmap = 'viridis', bins=200, norm=mpl.colors.LogNorm());
+        plt.gca().invert_yaxis()
+        plt.legend()
+        plt.grid(ls='--', alpha=0.3)
+
+        if slopes:
+            xs = np.linspace(0, 1, 100)
+            left = lin(xs, slopes[0], intercepts[0])
+            right = lin(xs, slopes[1], intercepts[1])
+            left_mask = (left > np.min(rsg_m)) & (left < np.max(rsg_m)) 
+            right_mask = (right < np.max(rsg_m)) & (right > lcut) 
+            plt.plot(xs[left_mask], left[left_mask], color='orange', lw=2, ls='--', label='left edge')
+            plt.plot(xs[right_mask], right[right_mask], color='orange', lw=2, ls='--', label='right edge')
+            plt.plot([np.max(xs[right_mask]), np.max(rsg_cl)], [lcut, lcut], color='orange', lw=2, ls='--', label='logL > 5')
+            plt.legend()
+
+        plt.xlabel(f'{self.f1}-{self.f2}')
+        plt.ylabel(self.f2)
+        plt.title(f'{self.gal.upper()} CMD');
+
+    def plot_lum_cmd(self):
+        rsg_cl = self.df[self.cmd_mask][f'{self.f1}_mag'] - self.df[self.cmd_mask][f'{self.f2}_mag']
+        rsg_m = self.df[self.cmd_mask][f'{self.f2}_mag']
+
+        plt.figure(figsize=(8, 6))
+        plt.scatter(rsg_cl, rsg_m, c=self.df[self.cmd_mask]['luminosity_median'], 
+                    cmap = 'Paired', norm=mpl.colors.LogNorm())
+        plt.colorbar()
+        plt.gca().invert_yaxis()
+        plt.grid(ls='--', alpha=0.3)
+
+        plt.xlabel(f'{self.f1}-{self.f2}')
+        plt.ylabel(self.f2)
+        plt.title(f'{self.gal.upper()} CMD');
+
+    def select_seed_sample(self, slopes, intercepts, lcut, plot=False, plot_3d=False):
+        rsg_cl = self.df[self.cmd_mask][f'{self.f1}_mag'] - self.df[self.cmd_mask][f'{self.f2}_mag']
+        rsg_m = self.df[self.cmd_mask][f'{self.f2}_mag']
+
+        m2 = rsg_m > lin(rsg_cl, slopes[0], intercepts[0])
+        blue_cut = (rsg_m < lin(rsg_cl, slopes[0], intercepts[0] - 1.5)) #| (~m2 & (rsg_m > 24))
+        m3 = rsg_m < lin(rsg_cl, slopes[1], intercepts[1])
+    
+        m4 = rsg_m < lcut
+        rsg_lit = self.df[self.cmd_mask][(m2&m3) | (~m3 & m4)]
+        agb_lit = self.df[self.cmd_mask][~m3 & ~m4]
+        blue_lit = self.df[self.cmd_mask][blue_cut]
+
+        temperature_mask = (np.log10(rsg_lit['temperature_median']) < np.log10(4500)) & (np.log10(rsg_lit['temperature_median']) > np.log10(3200))
+        luminosity_mask = (rsg_lit['luminosity_median'] < 4.5) & (rsg_lit['tau_V_median'] > 0.5)
+        rsg_lit = rsg_lit[temperature_mask & ~luminosity_mask]
+        self.rsg_lit, self.agb_lit, self.blue_lit = rsg_lit, agb_lit, blue_lit
+
+        if plot:
+            self.plot_cmd(slopes, intercepts, lcut)
+            plt.scatter(rsg_lit[f'{self.f1}_mag'] - rsg_lit[f'{self.f2}_mag'], rsg_lit[f'{self.f2}_mag'], color='red', s=1, label='RSG (seed)')
+            plt.scatter(agb_lit[f'{self.f1}_mag'] - agb_lit[f'{self.f2}_mag'], agb_lit[f'{self.f2}_mag'], color='coral', s=1, label='AGB (seed)')
+            plt.scatter(blue_lit[f'{self.f1}_mag'] - blue_lit[f'{self.f2}_mag'], blue_lit[f'{self.f2}_mag'], color='cyan', s=1, label='Blue (seed)')
+            plt.legend()
+
+        if plot_3d:
+            rsg_lit_ = rsg_lit.copy()
+            rsg_lit_['class'] = 'RSG'
+            agb_lit_ = agb_lit.copy()
+            agb_lit_['class'] = 'AGB'
+            blue_lit_ = blue_lit.copy()
+            blue_lit_['class'] = 'Blue'
+            lit_comb = pd.concat([rsg_lit_, agb_lit_, blue_lit_])
+
+            fig = px.scatter_3d(lit_comb, x='temperature_median', y='luminosity_median', z='tau_V_median', color='class', 
+                                hover_data=['temperature_median', 'luminosity_median', 'tau_V_median'], symbol='class', 
+                                color_discrete_map={'RSG':'royalblue', 'AGB':'coral', 'Blue':'magenta'},
+                                title=f'{self.gal.upper()} Literature Sample')
+            #update size of points and opacity
+            fig.update_traces(marker=dict(size=3, opacity=0.3))
+            fig.update_layout(scene = dict(
+                                xaxis_title='Temperature (K)',
+                                yaxis_title='Luminosity (Lsun)',
+                                zaxis_title='Tau'),
+                                legend_title='Class')
+            fig.show()
+
+            #save figure to html
+            fig.write_html(f'../plots/{self.gal}_lit_sample_3d.html')
+            
+        return rsg_lit, agb_lit, blue_lit
+

@@ -5,6 +5,7 @@ data/dolphot/
 sbi-logs/
 data/rsg*
 examples/
+.vscode/
 PKG-INFO
 *csv
 *png
@@ -22,8 +23,11 @@ PKG-INFO
 *.h5
 *.p
 *.pt
+*.html
+*mplstyle
 att_mask.py
 frbcat.ipynb
 plots.ipynb
 spec.ipynb
 sbi.ipynb
+inference.ipynb

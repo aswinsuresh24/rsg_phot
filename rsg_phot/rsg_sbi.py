@@ -978,6 +978,9 @@ class sbifit(object):
                 col = sbicat.loc[idx_]
                 obsmag = np.array(col[mcol_], dtype=float)
                 missing_mask = obsmag > 90
+                if (~missing_mask).sum() < 4:
+                    self.logger.info(f'Index {idx_} has less than 4 detections. Skipping.')
+                    continue
                 obsmag -= (self.rsgloader.gen_mc_obj.dm+30)
                 obserr = np.array(col[ecol_], dtype=float)
                 obserr = np.sqrt(obserr**2 + 0.01**2)

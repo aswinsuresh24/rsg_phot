@@ -402,8 +402,6 @@ class mcmcfit(object):
         truths = np.array(min_chi_params)
         reader = self.mc_obj.load_backend(phot)
         sample = np.array(reader.get_chain(flat=True, discard=75, thin=1))
-        lp = np.array(reader.get_log_prob(flat=True, discard=75, thin=1))
-        sample = sample[lp > np.percentile(lp, 0.10)]
 
         medians = np.percentile(sample, 50, axis=0)
         p16, p84 = np.percentile(sample, 16, axis=0), np.percentile(sample, 84, axis=0)
