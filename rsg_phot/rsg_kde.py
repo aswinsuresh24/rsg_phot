@@ -139,7 +139,6 @@ class AdaptiveKDE:
         self.alpha = alpha
         self.scaler = StandardScaler()
         self.kdes = {}
-        self.weights_dict = {}
     
     def fit(self, X, y, class_names=['RSG', 'AGB', 'Blue']):
         """Fit weighted KDEs (pseudo-adaptive)"""
@@ -162,7 +161,6 @@ class AdaptiveKDE:
             kde = gaussian_kde(X_class.T, bw_method='scott', weights=weights)
             
             self.kdes[class_idx] = kde
-            self.weights_dict[class_idx] = weights
                     
         return self
     
@@ -242,6 +240,9 @@ class star_class(object):
         plt.grid(ls='--', alpha=0.3)
 
         if slopes:
+            self.slopes = slopes
+            self.intercepts = intercepts
+            self.lcut = lcut
             xs = np.linspace(0, 1, 100)
             left = lin(xs, slopes[0], intercepts[0])
             right = lin(xs, slopes[1], intercepts[1])
@@ -276,18 +277,23 @@ class star_class(object):
         rsg_m = self.df[self.cmd_mask][f'{self.f2}_mag']
 
         m2 = rsg_m > lin(rsg_cl, slopes[0], intercepts[0])
-        blue_cut = (rsg_m < lin(rsg_cl, slopes[0], intercepts[0] - 1.5)) #| (~m2 & (rsg_m > 24))
+        blue_cut = (rsg_m < lin(rsg_cl, slopes[0], intercepts[0] - 0.5)) #| (~m2 & (rsg_m > 24))
         m3 = rsg_m < lin(rsg_cl, slopes[1], intercepts[1])
-    
         m4 = rsg_m < lcut
-        rsg_lit = self.df[self.cmd_mask][(m2&m3) | (~m3 & m4)]
-        agb_lit = self.df[self.cmd_mask][~m3 & ~m4]
-        blue_lit = self.df[self.cmd_mask][blue_cut]
 
+        rsg_lit = self.df[self.cmd_mask][(m2&m3) | (~m3 & m4)]
         temperature_mask = (np.log10(rsg_lit['temperature_median']) < np.log10(4500)) & (np.log10(rsg_lit['temperature_median']) > np.log10(3200))
         luminosity_mask = (rsg_lit['luminosity_median'] < 4.5) & (rsg_lit['tau_V_median'] > 0.5)
         rsg_lit = rsg_lit[temperature_mask & ~luminosity_mask]
-        self.rsg_lit, self.agb_lit, self.blue_lit = rsg_lit, agb_lit, blue_lit
+
+        agb_lit = self.df[self.cmd_mask][~m3 & ~m4]
+        blue_lit = self.df[self.cmd_mask][blue_cut]
+
+        rsg_lit['class'] = 'RSG'
+        agb_lit['class'] = 'AGB'
+        blue_lit['class'] = 'Blue'  
+        seed_df = pd.concat([rsg_lit, agb_lit, blue_lit], ignore_index=True)
+        self.seed_df = seed_df
 
         if plot:
             self.plot_cmd(slopes, intercepts, lcut)
@@ -297,15 +303,7 @@ class star_class(object):
             plt.legend()
 
         if plot_3d:
-            rsg_lit_ = rsg_lit.copy()
-            rsg_lit_['class'] = 'RSG'
-            agb_lit_ = agb_lit.copy()
-            agb_lit_['class'] = 'AGB'
-            blue_lit_ = blue_lit.copy()
-            blue_lit_['class'] = 'Blue'
-            lit_comb = pd.concat([rsg_lit_, agb_lit_, blue_lit_])
-
-            fig = px.scatter_3d(lit_comb, x='temperature_median', y='luminosity_median', z='tau_V_median', color='class', 
+            fig = px.scatter_3d(seed_df, x='temperature_median', y='luminosity_median', z='tau_V_median', color='class', 
                                 hover_data=['temperature_median', 'luminosity_median', 'tau_V_median'], symbol='class', 
                                 color_discrete_map={'RSG':'royalblue', 'AGB':'coral', 'Blue':'magenta'},
                                 title=f'{self.gal.upper()} Literature Sample')
@@ -321,5 +319,51 @@ class star_class(object):
             #save figure to html
             fig.write_html(f'../plots/{self.gal}_lit_sample_3d.html')
             
-        return rsg_lit, agb_lit, blue_lit
+        return seed_df
 
+    def kde_class(self, seed_df=None):
+        X = seed_df[['temperature_median', 'luminosity_median', 'tau_V_median']].values
+        y = seed_df['class'].map({'RSG':0, 'AGB':1, 'Blue':2}).values
+        self.kde = AdaptiveKDE(alpha=0.5).fit(X, y)
+
+        X_pred = self.df[['temperature_median', 'luminosity_median', 'tau_V_median']].values
+        self.df[['p_rsg', 'p_agb', 'p_blue']] = self.kde.predict_proba(X_pred)
+        kde_class = np.argmax(self.df[['p_rsg', 'p_agb', 'p_blue']].values, axis=1)
+        self.df['class_label'] = np.where(kde_class == 0, 'RSG', np.where(kde_class == 1, 'AGB', 'Blue'))
+
+        return self.df
+
+    def plot_kde_class(self):
+        df_ = self.df.copy()
+        df_.loc[(df_['p_rsg'] > 0.3) & (df_['p_rsg'] < 0.6), 'class_label'] = 'Uncertain'
+        fig = px.scatter_3d(df_, x='temperature_median', y='luminosity_median', z='tau_V_median', color='class_label', 
+                            hover_data=['temperature_median', 'luminosity_median', 'tau_V_median'], symbol='class_label', 
+                            color_discrete_map={'RSG':'royalblue', 'AGB':'coral', 'Blue':'magenta', 'Uncertain':'gray'},
+                            title=f'{self.gal.upper()} KDE Classification')
+        #update size of points and opacity
+        fig.update_traces(marker=dict(size=3, opacity=0.3))
+        fig.update_layout(scene = dict(
+                            xaxis_title='Temperature (K)',
+                            yaxis_title='Luminosity (Lsun)',
+                            zaxis_title='Tau'),
+                            legend_title='Class')
+        fig.show()
+
+        #save figure to html
+        fig.write_html(f'../plots/{self.gal}_kde_classification_3d.html')
+
+    def plot_kde_class_cmd(self, plot_class=None):
+        self.plot_cmd(self.slopes, self.intercepts, self.lcut)
+        class_colors = {'RSG':'royalblue', 'AGB':'coral', 'Blue':'magenta'}
+        if plot_class:
+            class_colors = {plot_class: class_colors[plot_class]}
+        for class_label, color in class_colors.items():
+            subset = self.df[self.cmd_mask & (self.df['class_label'] == class_label)]
+            plt.scatter(subset[f'{self.f1}_mag'] - subset[f'{self.f2}_mag'], subset[f'{self.f2}_mag'], 
+                        color=color, s=1, label=class_label)
+
+    def plot_rsg_cmd(self, pcut=0.7):
+        self.plot_cmd(self.slopes, self.intercepts, self.lcut)
+        rsg_subset = self.df[self.cmd_mask & (self.df['p_rsg'] > pcut)]
+        plt.scatter(rsg_subset[f'{self.f1}_mag'] - rsg_subset[f'{self.f2}_mag'], rsg_subset[f'{self.f2}_mag'], 
+                    c=rsg_subset['p_rsg'], s=5, cmap='inferno', norm=mpl.colors.LogNorm())
