@@ -172,8 +172,8 @@ class AdaptiveKDE:
         
         likelihoods = np.zeros((n_samples, n_classes))
         for class_idx, kde in self.kdes.items():
-            # Direct evaluation on arbitrary points
             likelihoods[:, class_idx] = kde(X_scaled.T)
+            # likelihoods[:, class_idx] /= np.max(likelihoods[:, class_idx])
         
         # Normalize
         probs = likelihoods / likelihoods.sum(axis=1, keepdims=True)
@@ -233,11 +233,10 @@ class star_class(object):
         rsg_cl = self.df[self.cmd_mask][f'{self.f1}_mag'] - self.df[self.cmd_mask][f'{self.f2}_mag']
         rsg_m = self.df[self.cmd_mask][f'{self.f2}_mag']
 
-        plt.figure(figsize=(8, 6))
-        plt.hexbin(rsg_cl, rsg_m, cmap = 'viridis', bins=200, norm=mpl.colors.LogNorm());
-        plt.gca().invert_yaxis()
-        plt.legend()
-        plt.grid(ls='--', alpha=0.3)
+        fig, ax = plt.subplots()
+        ax.hexbin(rsg_cl, rsg_m, cmap = 'viridis', bins=200, norm=mpl.colors.LogNorm());
+        ax.invert_yaxis()
+        ax.grid(ls='--', alpha=0.3)
 
         if slopes:
             self.slopes = slopes
@@ -248,25 +247,32 @@ class star_class(object):
             right = lin(xs, slopes[1], intercepts[1])
             left_mask = (left > np.min(rsg_m)) & (left < np.max(rsg_m)) 
             right_mask = (right < np.max(rsg_m)) & (right > lcut) 
-            plt.plot(xs[left_mask], left[left_mask], color='orange', lw=2, ls='--', label='left edge')
-            plt.plot(xs[right_mask], right[right_mask], color='orange', lw=2, ls='--', label='right edge')
-            plt.plot([np.max(xs[right_mask]), np.max(rsg_cl)], [lcut, lcut], color='orange', lw=2, ls='--', label='logL > 5')
-            plt.legend()
+            ax.plot(xs[left_mask], left[left_mask], color='orange', lw=2, ls='--', label='left edge')
+            ax.plot(xs[right_mask], right[right_mask], color='orange', lw=2, ls='--', label='right edge')
+            ax.plot([np.max(xs[right_mask]), np.max(rsg_cl)], [lcut, lcut], color='orange', lw=2, ls='--', label='logL > 5')
+            ax.legend()
 
-        plt.xlabel(f'{self.f1}-{self.f2}')
-        plt.ylabel(self.f2)
-        plt.title(f'{self.gal.upper()} CMD');
+        ax.set_xlabel(f'{self.f1}-{self.f2}')
+        ax.set_ylabel(self.f2)
+        ax.set_title(f'{self.gal.upper()}');  
 
     def plot_lum_cmd(self):
         rsg_cl = self.df[self.cmd_mask][f'{self.f1}_mag'] - self.df[self.cmd_mask][f'{self.f2}_mag']
         rsg_m = self.df[self.cmd_mask][f'{self.f2}_mag']
+        lums = self.df[self.cmd_mask]['luminosity_median']
+        lmask = (lums > 4.97) & (lums < 5.03) & (rsg_cl > np.median(rsg_cl))
+        f200w_mean, f200w_sig = np.mean(rsg_m[lmask]), np.std(rsg_m[lmask], ddof=1)
+        self.logger.info(f"F200W mag for logL ~ 5: mean={f200w_mean:.2f}, std={f200w_sig:.2f}")
 
         plt.figure(figsize=(8, 6))
         plt.scatter(rsg_cl, rsg_m, c=self.df[self.cmd_mask]['luminosity_median'], 
                     cmap = 'Paired', norm=mpl.colors.LogNorm())
+        plt.fill_between(np.linspace(np.min(rsg_cl), np.max(rsg_cl), 100), f200w_mean-f200w_sig, f200w_mean+f200w_sig, 
+                         color='orange', alpha=0.3, label='logL ~ 5')
         plt.colorbar()
         plt.gca().invert_yaxis()
         plt.grid(ls='--', alpha=0.3)
+        plt.legend()
 
         plt.xlabel(f'{self.f1}-{self.f2}')
         plt.ylabel(self.f2)
@@ -286,6 +292,8 @@ class star_class(object):
         luminosity_mask = (rsg_lit['luminosity_median'] < 4.5) & (rsg_lit['tau_V_median'] > 0.5)
         rsg_lit = rsg_lit[temperature_mask & ~luminosity_mask]
 
+        m3 = rsg_m < lin(rsg_cl, slopes[1], intercepts[1] + 0.3)
+        m4 = rsg_m < lcut + 0.2
         agb_lit = self.df[self.cmd_mask][~m3 & ~m4]
         blue_lit = self.df[self.cmd_mask][blue_cut]
 
@@ -321,15 +329,19 @@ class star_class(object):
             
         return seed_df
 
-    def kde_class(self, seed_df=None):
+    def kde_class(self, seed_df=None, assign_class=True):
         X = seed_df[['temperature_median', 'luminosity_median', 'tau_V_median']].values
         y = seed_df['class'].map({'RSG':0, 'AGB':1, 'Blue':2}).values
         self.kde = AdaptiveKDE(alpha=0.5).fit(X, y)
 
         X_pred = self.df[['temperature_median', 'luminosity_median', 'tau_V_median']].values
-        self.df[['p_rsg', 'p_agb', 'p_blue']] = self.kde.predict_proba(X_pred)
-        kde_class = np.argmax(self.df[['p_rsg', 'p_agb', 'p_blue']].values, axis=1)
-        self.df['class_label'] = np.where(kde_class == 0, 'RSG', np.where(kde_class == 1, 'AGB', 'Blue'))
+        if assign_class:
+            self.df[['p_rsg', 'p_agb', 'p_blue']] = self.kde.predict_proba(X_pred)
+            kde_class = np.argmax(self.df[['p_rsg', 'p_agb', 'p_blue']].values, axis=1)
+            self.df['class_label'] = np.where(kde_class == 0, 'RSG', np.where(kde_class == 1, 'AGB', 'Blue'))
+        else:
+            probs = self.kde.predict_proba(X_pred)
+            return probs
 
         return self.df
 
@@ -367,3 +379,28 @@ class star_class(object):
         rsg_subset = self.df[self.cmd_mask & (self.df['p_rsg'] > pcut)]
         plt.scatter(rsg_subset[f'{self.f1}_mag'] - rsg_subset[f'{self.f2}_mag'], rsg_subset[f'{self.f2}_mag'], 
                     c=rsg_subset['p_rsg'], s=5, cmap='inferno', norm=mpl.colors.LogNorm())
+        
+    def bootstrap_kde_class(self, slopes, slope_errs, intercepts, intercept_errs, lcut, n_bootstrap=100):
+        boot_df = self.df.copy()
+        for i in tqdm(range(n_bootstrap), desc='Bootstrap KDE'):
+            slopes_boot = np.random.normal(slopes, slope_errs)
+            intercepts_boot = np.random.normal(intercepts, intercept_errs)
+            # clip to within 3 sigma of means
+            slopes_boot[0] = np.clip(slopes_boot[0], slopes[0] - 3*slope_errs[0], slopes[0] + 3*slope_errs[0])
+            slopes_boot[1] = np.clip(slopes_boot[1], slopes[1] - 3*slope_errs[1], slopes[1] + 3*slope_errs[1])
+            intercepts_boot[0] = np.clip(intercepts_boot[0], intercepts[0] - 3*intercept_errs[0], intercepts[0] + 3*intercept_errs[0])
+            intercepts_boot[1] = np.clip(intercepts_boot[1], intercepts[1] - 3*intercept_errs[1], intercepts[1] + 3*intercept_errs[1])
+
+            seed_df_boot = self.select_seed_sample(slopes_boot, intercepts_boot, lcut)
+            probs = self.kde_class(seed_df_boot, assign_class=False)
+            boot_df[[f'p_rsg_boot_{i}', f'p_agb_boot_{i}', f'p_blue_boot_{i}']] = probs
+
+        boot_df['p_rsg_mean'] = boot_df[[col for col in boot_df.columns if col.startswith('p_rsg_boot_')]].mean(axis=1)
+        boot_df['p_agb_mean'] = boot_df[[col for col in boot_df.columns if col.startswith('p_agb_boot_')]].mean(axis=1)
+        boot_df['p_blue_mean'] = boot_df[[col for col in boot_df.columns if col.startswith('p_blue_boot_')]].mean(axis=1)
+
+        boot_df['p_rsg_sig'] = boot_df[[col for col in boot_df.columns if col.startswith('p_rsg_boot_')]].std(axis=1)
+        boot_df['p_agb_sig'] = boot_df[[col for col in boot_df.columns if col.startswith('p_agb_boot_')]].std(axis=1)
+        boot_df['p_blue_sig'] = boot_df[[col for col in boot_df.columns if col.startswith('p_blue_boot_')]].std(axis=1)
+        self.boot_df = boot_df
+        return boot_df
