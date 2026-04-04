@@ -28,6 +28,7 @@ PKG-INFO
 att_mask.py
 frbcat.ipynb
 plots.ipynb
+hack.ipynb
 spec.ipynb
 sbi.ipynb
 inference.ipynb

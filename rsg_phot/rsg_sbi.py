@@ -393,37 +393,60 @@ class sbifit(object):
         noise_pdf = np.zeros_like(ymags.values)
         if sim_type == 'chisq':
             self.logger.info(f'Adding simulator jitter based on chi sq values')
-            off_mags = np.zeros_like(rsgcat[self.rsgloader.cols['magcols'][self.rsgloader.flt_mask]].values)
-            for i, idx in enumerate(rsgcat.index):
-                try:
-                    d = 0.0
-                    row = rsgcat.loc[idx]
-                    obsmag = row[self.rsgloader.cols['magcols'][self.rsgloader.flt_mask]]
-                    t_, td_, l_, tu_, a_ = row['teff_chisq'], row['tdust_chisq'], row['lum_chisq'], row['tau_chisq'], row['av_chisq']
-                    if l_ > 6.0: 
-                        d = l_ - 6.0
-                        l_ = 6.0
-                    chisq_params = np.meshgrid([t_, td_, tu_, l_, 3.1, a_], indexing='ij', sparse=True)
-                    model_mag = np.array([self.rsgloader.gen_mc_obj.model[f](chisq_params).flatten()[0] for f in self.rsgloader.cols['flts'][self.rsgloader.flt_mask]]) + self.rsgloader.gen_mc_obj.dm
-                    model_mag = model_mag - 2.5*d
-                    off_mags[i, :] = (obsmag - model_mag).values
-                except Exception as e:
-                    self.logger.info(e)
-                    off_mags[i, :] = 90.0
+            sim_noise_p = self.procdir / 'sim_noise_res.p'
+            if sim_noise_p.exists():
+                save_res = pickle.load(open(sim_noise_p, 'rb'))
+                if save_res.shape[1] != noise_pdf.shape[1]:
+                    raise ValueError(f'Number of filters in training set {noise_pdf.shape[1]} does not match number of filters in saved noise model {save_res.shape[1]}')
+                
+                nsamp = len(ymags)
+                for i in range(noise_pdf.shape[1]):
+                    ae, mu_e, sig_e, is_skew = save_res[:, i]
+                    if is_skew:
+                        resamp_noise = skewnorm.rvs(ae, mu_e, sig_e, size=nsamp)
+                    else:
+                        resamp_noise = np.random.normal(mu_e, sig_e, size=nsamp)
+                    noise_pdf[:, i] = resamp_noise
 
-            nsamp = len(ymags)
-            for i, offs in enumerate(off_mags.T):
-                mask = (np.abs(offs) > 1) | np.isnan(offs) | np.isinf(offs)
-                try:
-                    ae, mu_e, sig_e = skewnorm.fit(offs[~mask])
-                    if (ae < 0.0) | (mu_e < 0.0) | (sig_e < 0.0):
-                        ae, mu_e, sig_e = 0.0, np.median(offs[~mask]), np.std(offs[~mask], ddof=1)
-                    resamp_noise = skewnorm.rvs(ae, mu_e, sig_e, size=nsamp)
-                except:
-                    mu, sig = np.mean(offs[~mask]), np.std(offs[~mask], ddof=1)
-                    resamp_noise = np.random.normal(mu, sig, size=nsamp)
-                noise_pdf[:, i] = resamp_noise
+            else:
+                off_mags = np.zeros_like(rsgcat[self.rsgloader.cols['magcols'][self.rsgloader.flt_mask]].values)
+                for i, idx in enumerate(rsgcat.index):
+                    try:
+                        d = 0.0
+                        row = rsgcat.loc[idx]
+                        obsmag = row[self.rsgloader.cols['magcols'][self.rsgloader.flt_mask]]
+                        t_, td_, l_, tu_, a_ = row['teff_chisq'], row['tdust_chisq'], row['lum_chisq'], row['tau_chisq'], row['av_chisq']
+                        if l_ > 6.0: 
+                            d = l_ - 6.0
+                            l_ = 6.0
+                        chisq_params = np.meshgrid([t_, td_, tu_, l_, 3.1, a_], indexing='ij', sparse=True)
+                        model_mag = np.array([self.rsgloader.gen_mc_obj.model[f](chisq_params).flatten()[0] for f in self.rsgloader.cols['flts'][self.rsgloader.flt_mask]]) + self.rsgloader.gen_mc_obj.dm
+                        model_mag = model_mag - 2.5*d
+                        off_mags[i, :] = (obsmag - model_mag).values
+                    except Exception as e:
+                        self.logger.info(e)
+                        off_mags[i, :] = 90.0
 
+                nsamp = len(ymags)
+                save_res = np.zeros((4, len(off_mags.T)))
+                for i, offs in enumerate(off_mags.T):
+                    mask = (np.abs(offs) > 1) | np.isnan(offs) | np.isinf(offs)
+                    try:
+                        ae, mu_e, sig_e = skewnorm.fit(offs[~mask])
+                        if (ae < 0.0) | (sig_e < 0.0):
+                            ae, mu_e, sig_e = 0.0, np.median(offs[~mask]), np.std(offs[~mask], ddof=1)
+                        resamp_noise = skewnorm.rvs(ae, mu_e, sig_e, size=nsamp)
+                        save_res[:, i] = [ae, mu_e, sig_e, 1]
+                    except:
+                        mu, sig = np.mean(offs[~mask]), np.std(offs[~mask], ddof=1)
+                        resamp_noise = np.random.normal(mu, sig, size=nsamp)
+                        save_res[:, i] = [0.0, mu, sig, 0]
+                    noise_pdf[:, i] = resamp_noise
+
+                # save_res to a pickle file
+                with open(sim_noise_p, 'wb') as f:
+                    pickle.dump(save_res, f)
+            
         elif sim_type == 'random':
             self.logger.info(f'Adding simulator jitter using random Gaussian noise')
             for i in range(len(self.rsgloader.cols['magcols'][self.rsgloader.flt_mask])):
@@ -809,8 +832,9 @@ class sbifit(object):
 
         outdf = pd.DataFrame(out, columns=self.rsgloader.cols['flts'][self.rsgloader.flt_mask])
         noise = self.sim_skew_mag_err(outdf, interp_bins=100) 
+        yout = self.sim_obs_noise(outdf, sim_type='chisq')
 
-        out = np.hstack((out, noise))
+        out = np.hstack((yout, noise))
         out = torch.as_tensor(out.astype(np.float32)).to('cpu')
         return out
     
