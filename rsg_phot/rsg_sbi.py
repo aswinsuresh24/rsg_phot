@@ -203,7 +203,8 @@ class sbifit(object):
 
         return sample_params
 
-    def sim_training_set(self, ntrain:int=int(4e5), prior_type = 'mixed', mix_frac=0.3, fname=None) -> None:
+    def sim_training_set(self, ntrain:int=int(4e5), prior_type = 'mixed', mix_frac=0.3, fname=None, 
+                         return_params_only=False) -> None:
         if not isinstance(ntrain, int):
             ntrain = int(ntrain)
 
@@ -225,6 +226,9 @@ class sbifit(object):
             prior_samp = self.sample_exp_prior(n_prior)
             uniform_samp = self.gen_mc_obj.get_init_pos(n_uniform)
             sample_params = np.vstack((prior_samp, uniform_samp))
+
+        if return_params_only:
+            return sample_params
 
         self.logger.info(f'Generating {ntrain} training samples following {prior_type} prior')
         # save model photometry for all samples
@@ -679,14 +683,14 @@ class sbifit(object):
 
         test_fname = self.procdir / f"{self.rsgloader.gal}_test.csv"
         if not test_fname.exists():
-            self.sim_training_set(ntrain=int(2e3), prior_type='independent', mix_frac=0.0, fname=test_fname)
+            thetas = self.sim_training_set(ntrain=int(2e3), prior_type='independent', mix_frac=0.0, fname=test_fname,
+                                           return_params_only=True)
             ndim = int(len(self.gen_mc_obj.model_fit_params))
-            test_df = pd.read_csv(test_fname)
-            test_err = self.sim_skew_mag_err(test_df, noise_floor=0.01, interp_bins=100)
-            y_err = pd.DataFrame(test_err, columns=self.rsgloader.cols['errcols'][self.rsgloader.flt_mask])
-            y_test = test_df[self.rsgloader.cols['flts'][self.rsgloader.flt_mask]]
-            self.y_test = pd.concat([y_test, y_err], axis=1)
-            self.x_test = test_df[test_df.columns[:ndim]]
+            self.x_test = pd.DataFrame(thetas, columns=self.gen_mc_obj.model_fit_params)
+            y_sim = self.simulator(self.x_test.to_numpy(dtype=np.float32))
+            self.ytest = pd.DataFrame(y_sim, 
+                                      columns=np.hstack((self.rsgloader.cols['flts'][self.rsgloader.flt_mask], 
+                                                         self.rsgloader.cols['errcols'][self.rsgloader.flt_mask])))
             pd.concat([self.x_test, self.y_test], axis=1).to_csv(test_fname, index=False)
         else:
             ndim = int(len(self.gen_mc_obj.model_fit_params))
@@ -822,8 +826,6 @@ class sbifit(object):
         return result
     
     def simulator(self, theta_in):
-        # theta_in[:, 0] = theta_in[:, 0]*1e3
-        # theta_in[:, 1] = theta_in[:, 1]*1e3
         out = np.zeros((len(theta_in), len(self.rsgloader.cols['flts'][self.rsgloader.flt_mask])))
 
         for i, theta in enumerate(theta_in):
