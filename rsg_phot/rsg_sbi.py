@@ -34,16 +34,33 @@ from sklearn.decomposition import PCA
 import matplotlib.pyplot as plt
 import rsg_phot.sbi_pp as sbi_pp
 import signal
-import trackio
 import json, hashlib
 from pathlib import Path
-import optuna
-from optuna.trial import TrialState
 from joblib import parallel_backend
+from contextlib import contextmanager
 
 from rsg_phot.mcmc import mcmc
 from rsg_phot.mc_parallel import rsg_dataloader
 from rsg_phot.utils import create_sqlite_db, stdout_mode, TqdmToLogger
+
+@contextmanager
+def suppress_stdout():
+    with open(os.devnull, 'w') as devnull:
+        old_stdout = sys.stdout
+        old_stderr = sys.stderr
+        sys.stdout = devnull
+        sys.stderr = devnull
+        try:
+            yield
+        finally:
+            sys.stdout = old_stdout
+            sys.stderr = old_stderr
+
+with suppress_stdout():
+    import trackio
+    import optuna
+    from optuna.trial import TrialState
+
 
 logging.getLogger("root").setLevel(logging.ERROR)
 
@@ -688,9 +705,9 @@ class sbifit(object):
             ndim = int(len(self.gen_mc_obj.model_fit_params))
             self.x_test = pd.DataFrame(thetas, columns=self.gen_mc_obj.model_fit_params)
             y_sim = self.simulator(self.x_test.to_numpy(dtype=np.float32))
-            self.ytest = pd.DataFrame(y_sim, 
-                                      columns=np.hstack((self.rsgloader.cols['flts'][self.rsgloader.flt_mask], 
-                                                         self.rsgloader.cols['errcols'][self.rsgloader.flt_mask])))
+            self.y_test = pd.DataFrame(y_sim, 
+                                       columns=np.hstack((self.rsgloader.cols['flts'][self.rsgloader.flt_mask], 
+                                                          self.rsgloader.cols['errcols'][self.rsgloader.flt_mask])))
             pd.concat([self.x_test, self.y_test], axis=1).to_csv(test_fname, index=False)
         else:
             ndim = int(len(self.gen_mc_obj.model_fit_params))

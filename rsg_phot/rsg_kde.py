@@ -1,7 +1,5 @@
 import scienceplots
 import numpy as np
-from synphot import SpectralElement
-from synphot.models import Empirical1D
 import os, glob
 import emcee
 import progressbar
@@ -41,8 +39,9 @@ from plotly import express as px
 import signal
 import copy
 from pathlib import Path
-import optuna
 import json
+from multiprocessing import Pool, Process
+from contextlib import contextmanager
 
 import rsg_phot.dust as dust
 from rsg_phot.mcmc import mcmc
@@ -50,82 +49,151 @@ from rsg_phot.mc_parallel import rsg_dataloader, mcmcfit
 from rsg_phot.rsg_sbi import sbifit
 from rsg_phot import sbi_pp
 
+@contextmanager
+def suppress_stdout():
+    with open(os.devnull, 'w') as devnull:
+        old_stdout = sys.stdout
+        old_stderr = sys.stderr
+        sys.stdout = devnull
+        sys.stderr = devnull
+        try:
+            yield
+        finally:
+            sys.stdout = old_stdout
+            sys.stderr = old_stderr
+
+with suppress_stdout():
+    from synphot import SpectralElement
+    from synphot.models import Empirical1D
+    import optuna
+
 ALL_CONFIGS = {
-    'ngc5236': {'rsgcat': os.path.join(os.pardir, 'data/dolphot/ngc5236/ngc5236_sil_rsgcat.csv'),
+    'ngc5236': {'rsgcat': Path('../data/dolphot/ngc5236/ngc5236_sil_rsgcat.csv'),
                 'load_args': {'gal':'ngc5236',
-                              'procdir':os.path.join(os.pardir, 'data/dolphot/ngc5236'), 'photfile_path':None,
+                              'procdir':Path('../data/dolphot/ngc5236'), 'photfile_path':None,
                               'dm':28.46, 'dmerr':0.05, 'z':-0.25, 'trgb':('F090W', 24.52),
                               'modeltype':'MARCS', 'comp':'sil',
                               'keep_narrow':False},
-                'model': "957a9f22"},
-    'ngc5194': {'rsgcat': os.path.join(os.pardir, 'data/dolphot/ngc5194/ngc5194_sil_rsgcat.csv'),
+                'model': "957a9f22",
+                'f1': 'F115W', 'f2': 'F200W',
+                'sbicat_path': Path('../data/dolphot/ngc5236/ngc5236_sbi_cat.csv'),
+                'slopes': (-10.997118155619603, -8.299065420560746),
+                'intercepts': (25.027455331412106, 26.080644859813084),
+                'lcut': 20.0},
+    'ngc5194': {'rsgcat': Path('../data/dolphot/ngc5194/ngc5194_sil_rsgcat.csv'),
                 'load_args': {'gal':'ngc5194',
-                              'procdir':os.path.join(os.pardir, 'data/dolphot/ngc5194'), 'photfile_path':None,
+                              'procdir':Path('../data/dolphot/ngc5194'), 'photfile_path':None,
                               'dm':29.67, 'dmerr':0.02, 'z':0.0, 'trgb':('F200W', 24.2),
                               'modeltype':'MARCS', 'comp':'sil',
                               'keep_narrow':False, 'ignore_filts': ['F090W', 'F410M', 'F430M']},
-                'model': "fb3481bf"},
-    'ngc4258': {'rsgcat': os.path.join(os.pardir, 'data/dolphot/ngc4258/ngc4258_sil_rsgcat.csv'),
+                'model': "fb3481bf",
+                'f1': 'F115W', 'f2': 'F200W',
+                'sbicat_path': Path('../data/dolphot/ngc5194/ngc5194_sbi_cat.csv'),
+                'slopes': (-11.38235294117647, -8.632587859424925),
+                'intercepts':(25.339029411764706, 27.097386581469653),
+                'lcut': 21.15},
+    'ngc4258': {'rsgcat': Path('../data/dolphot/ngc4258/ngc4258_sil_rsgcat.csv'),
                 'load_args': {'gal':'ngc4258',
-                              'procdir':os.path.join(os.pardir, 'data/dolphot/ngc4258'), 'photfile_path':None,
+                              'procdir':Path('../data/dolphot/ngc4258'), 'photfile_path':None,
                               'dm':29.397, 'dmerr':0.03, 'z':-0.25, 'trgb':('F090W', 25.055),
                               'modeltype':'MARCS', 'comp':'sil',
                               'keep_narrow':False},
-                'model': "ef220e94"},
-    'ngc628': {'rsgcat': os.path.join(os.pardir, 'data/dolphot/ngc628/ngc628_sil_rsgcat.csv'),
+                'model': "ef220e94",
+                'f1': 'F115W', 'f2': 'F210M',
+                'sbicat_path': Path('../data/dolphot/ngc4258/ngc4258_sbi_cat.csv'),
+                'slopes': (-9.50366300366301, -9.599206349206352),
+                'intercepts':(24.101245421245423, 26.033015873015874),
+                'lcut': 21.0},
+    'ngc628': {'rsgcat': Path('../data/dolphot/ngc628/ngc628_sil_rsgcat.csv'),
                'load_args': {'gal':'ngc628',
-                             'procdir':os.path.join(os.pardir, 'data/dolphot/ngc628'), 'photfile_path':None,
+                             'procdir':Path('../data/dolphot/ngc628'), 'photfile_path':None,
                              'dm':30.04, 'dmerr':0.125, 'z':-0.25, 'trgb':('F090W', 29.13),
                              'modeltype':'MARCS', 'comp':'sil',
                              'keep_narrow':False, 'ignore_filts':['F090W', 'F140M', 'F182M', 'F410M', 'F430M', 'F480M']},
-               'model': "89285257"},
-    'ngc5643': {'rsgcat': os.path.join(os.pardir, 'data/dolphot/ngc5643/ngc5643_sil_rsgcat.csv'),
+               'model': "89285257",
+               'f1': 'F115W', 'f2': 'F200W',
+               'sbicat_path': Path('../data/dolphot/ngc628/ngc628_sbi_cat.csv'),
+               'slopes': (-12.158018867924522, -11.299303944315538),
+               'intercepts': (27.09827830188679, 28.472839907192572),
+               'lcut': 22.0},
+    'ngc5643': {'rsgcat': Path('../data/dolphot/ngc5643/ngc5643_sil_rsgcat.csv'),
                 'load_args': {'gal':'ngc5643',
-                              'procdir':os.path.join(os.pardir, 'data/dolphot/ngc5643'), 'photfile_path':None,
+                              'procdir':Path('../data/dolphot/ngc5643'), 'photfile_path':None,
                               'dm':30.57, 'dmerr':0.06, 'z':-0.25, 'trgb':('F090W', 26.20),
                               'modeltype':'MARCS', 'comp':'sil',
                               'keep_narrow':False, 'ignore_filts':['F300M']},
-                'model': "be8ad86d"},
-    'ngc7320': {'rsgcat': os.path.join(os.pardir, 'data/dolphot/ngc7320/ngc7320_sil_rsgcat.csv'),
+                'model': "be8ad86d",
+                'f1': 'F115W', 'f2': 'F200W',
+                'sbicat_path': Path('../data/dolphot/ngc5643/ngc5643_sbi_cat.csv'),
+                'slopes': (-21.6048780487805, -12.375527426160339),
+                'intercepts': (30.181629268292685, 29.860953586497892),
+                'lcut': 22.0},
+    'ngc7320': {'rsgcat': Path('../data/dolphot/ngc7320/ngc7320_sil_rsgcat.csv'),
                 'load_args': {'gal':'ngc7320',
-                              'procdir':os.path.join(os.pardir, 'data/dolphot/ngc7320'), 'photfile_path':None,
+                              'procdir':Path('../data/dolphot/ngc7320'), 'photfile_path':None,
                               'dm':30.57, 'dmerr':0.5, 'z':-0.25, 'trgb':('F150W', 27.0),
                               'modeltype':'MARCS', 'comp':'sil',
                               'keep_narrow':False},
-                'model': "c74a700a"},
-    'ngc1367': {'rsgcat': os.path.join(os.pardir, 'data/dolphot/ngc1367/ngc1367_sil_rsgcat.csv'),
+                'model': "c74a700a",
+                'f1': 'F090W', 'f2': 'F200W',
+                'sbicat_path': Path('../data/dolphot/ngc7320/ngc7320_sbi_cat.csv'),
+                'slopes': (-8.544152744630077, -8.814249363867678),
+                'intercepts': (30.82461097852029, 32.85034096692111),
+                'lcut': 23.0},
+    'ngc1367': {'rsgcat': Path('../data/dolphot/ngc1367/ngc1367_sil_rsgcat.csv'),
                 'load_args': {'gal':'ngc1367',
-                              'procdir':os.path.join(os.pardir, 'data/dolphot/ngc1367'), 'photfile_path':None,
+                              'procdir':Path('../data/dolphot/ngc1367'), 'photfile_path':None,
                               'dm':30.40, 'dmerr':0.07, 'z':0.00, 'trgb':('F090W', 29.13),
                               'modeltype':'MARCS', 'comp':'sil',
                               'keep_narrow':False, 'ignore_filts':['F300M']},
-                'model': "27370b04"},
-    'ngc1365': {'rsgcat': os.path.join(os.pardir, 'data/dolphot/ngc1365/ngc1365_sil_rsgcat.csv'),
+                'model': "27370b04",
+                'f1': 'F150W', 'f2': 'F200W',
+                'sbicat_path': Path('../data/dolphot/ngc1367/ngc1367_sbi_cat.csv'),
+                'slopes': (-16.12578616352201, -17.630630630630638),
+                'intercepts': (29.09827830188679, 30.472839907192572),
+                'lcut': 22.0},
+    'ngc1365': {'rsgcat': Path('../data/dolphot/ngc1365/ngc1365_sil_rsgcat.csv'),
                 'load_args': {'gal':'ngc1365',
-                              'procdir':os.path.join(os.pardir, 'data/dolphot/ngc1365'), 'photfile_path':None,
+                              'procdir':Path('../data/dolphot/ngc1365'), 'photfile_path':None,
                               'dm':31.29, 'dmerr':0.065, 'z':-0.25, 'trgb':('F090W', 27.34),
                               'modeltype':'MARCS', 'comp':'sil',
                               'keep_narrow':False},
-                'model': "05602ed7"},
-    'ngc4536': {'rsgcat': os.path.join(os.pardir, 'data/dolphot/ngc4536/ngc4536_sil_rsgcat.csv'),
+                'model': "05602ed7",
+                'f1': 'F115W', 'f2': 'F200W',
+                'sbicat_path': Path('../data/dolphot/ngc1365/ngc1365_sbi_cat.csv'),
+                'slopes': (-11.168421052631578, -11.948207171314737),
+                'intercepts': (27.26592631578947, 29.59770517928287),
+                'lcut': 23.0},
+    'ngc4536': {'rsgcat': Path('../data/dolphot/ngc4536/ngc4536_sil_rsgcat.csv'),
                 'load_args': {'gal':'ngc4536',
-                              'procdir':os.path.join(os.pardir, 'data/dolphot/ngc4536'), 'photfile_path':None,
+                              'procdir':Path('../data/dolphot/ngc4536'), 'photfile_path':None,
                               'dm':30.99, 'dmerr':0.06, 'z':-0.25, 'trgb':('F090W', 27.01),
                               'modeltype':'MARCS', 'comp':'sil',
                               'keep_narrow':False, 'ignore_filts': ['F115W', 'F444W']},
-                'model': "9badc531"},
-    'ngc5457': {'rsgcat': os.path.join(os.pardir, 'data/dolphot/ngc5457/ngc5457_sil_rsgcat.csv'),
+                'model': "9badc531",
+                'f1': 'F150W', 'f2': 'F200W',
+                'sbicat_path': Path('../data/dolphot/ngc4536/ngc4536_sbi_cat.csv'),
+                'slopes': (-18.852941176470587, -17.630630630630638),
+                'intercepts': (23.947, 25.269297297297296),
+                'lcut': 22.6
+                },
+    'ngc5457': {'rsgcat': Path('../data/dolphot/ngc5457/ngc5457_sil_rsgcat.csv'),
                 'load_args': {'gal':'ngc5457',
-                              'procdir':os.path.join(os.pardir, 'data/dolphot/ngc5457'), 'photfile_path':None,
+                              'procdir':Path('../data/dolphot/ngc5457'), 'photfile_path':None,
                               'dm':29.07, 'dmerr':0.05, 'z':-0.25, 'trgb':('F090W', 25.04),
                               'modeltype':'MARCS', 'comp':'sil',
                               'keep_narrow':False, 'ignore_filts':['F322W2']},
-                'model': "c2583613"},
-    'ngc4449': {'rsgcat': os.path.join(os.pardir, 'data/dolphot/ngc4449/ngc4449_ngc4485_combined_rsgcat.csv'),
-                'load_args': {'gal':'ngc4449', 'procdir':os.path.join(os.pardir, 'data/dolphot/ngc4449'), 'photfile_path':None,
-                              'dm':0.0, 'dmerr':0.32, 'z':-0.25, 'trgb':('F090W', -2.91),
-                              'modeltype':'MARCS', 'comp':'sil', 'keep_narrow':False},
-                'model': "f607c658"}
+                'model': "c2583613",
+                'f1': 'F115W', 'f2': 'F200W',
+                'sbicat_path': Path('../data/dolphot/ngc5457/ngc5457_sbi_cat.csv'),
+                'slopes': (-12.594059405940596, -12.495192307692308),
+                'intercepts': (25.888089108910894, 27.75989903846154),
+                'lcut': 20.6},
+    # 'ngc4449': {'rsgcat': os.path.join(os.pardir, 'data/dolphot/ngc4449/ngc4449_ngc4485_combined_rsgcat.csv'),
+    #             'load_args': {'gal':'ngc4449', 'procdir':os.path.join(os.pardir, 'data/dolphot/ngc4449'), 'photfile_path':None,
+    #                           'dm':0.0, 'dmerr':0.32, 'z':-0.25, 'trgb':('F090W', -2.91),
+    #                           'modeltype':'MARCS', 'comp':'sil', 'keep_narrow':False},
+    #             'model': "f607c658"}
 }
 
 def lin(x, m, c): 
@@ -242,7 +310,7 @@ class star_class(object):
             self.slopes = slopes
             self.intercepts = intercepts
             self.lcut = lcut
-            xs = np.linspace(0, 1, 100)
+            xs = np.linspace(-0.5, 1.5, 100)
             left = lin(xs, slopes[0], intercepts[0])
             right = lin(xs, slopes[1], intercepts[1])
             left_mask = (left > np.min(rsg_m)) & (left < np.max(rsg_m)) 
@@ -380,9 +448,10 @@ class star_class(object):
         plt.scatter(rsg_subset[f'{self.f1}_mag'] - rsg_subset[f'{self.f2}_mag'], rsg_subset[f'{self.f2}_mag'], 
                     c=rsg_subset['p_rsg'], s=5, cmap='inferno', norm=mpl.colors.LogNorm())
         
-    def bootstrap_kde_class(self, slopes, slope_errs, intercepts, intercept_errs, lcut, n_bootstrap=100):
+    def bootstrap_kde_class(self, slopes, slope_errs, intercepts, intercept_errs, lcut, n_bootstrap=100, savepath=None):
         boot_df = self.df.copy()
-        for i in tqdm(range(n_bootstrap), desc='Bootstrap KDE'):
+        line_probs = np.zeros((len(boot_df), 3, n_bootstrap))
+        for i in range(n_bootstrap):
             slopes_boot = np.random.normal(slopes, slope_errs)
             intercepts_boot = np.random.normal(intercepts, intercept_errs)
             # clip to within 3 sigma of means
@@ -393,14 +462,49 @@ class star_class(object):
 
             seed_df_boot = self.select_seed_sample(slopes_boot, intercepts_boot, lcut)
             probs = self.kde_class(seed_df_boot, assign_class=False)
-            boot_df[[f'p_rsg_boot_{i}', f'p_agb_boot_{i}', f'p_blue_boot_{i}']] = probs
+            line_probs[:, :, i] = probs
 
-        boot_df['p_rsg_mean'] = boot_df[[col for col in boot_df.columns if col.startswith('p_rsg_boot_')]].mean(axis=1)
-        boot_df['p_agb_mean'] = boot_df[[col for col in boot_df.columns if col.startswith('p_agb_boot_')]].mean(axis=1)
-        boot_df['p_blue_mean'] = boot_df[[col for col in boot_df.columns if col.startswith('p_blue_boot_')]].mean(axis=1)
+        boot_df['p_rsg_mean'] = np.mean(line_probs[:, 0, :], axis=1)
+        boot_df['p_agb_mean'] = np.mean(line_probs[:, 1, :], axis=1)
+        boot_df['p_blue_mean'] = np.mean(line_probs[:, 2, :], axis=1)
 
-        boot_df['p_rsg_sig'] = boot_df[[col for col in boot_df.columns if col.startswith('p_rsg_boot_')]].std(axis=1)
-        boot_df['p_agb_sig'] = boot_df[[col for col in boot_df.columns if col.startswith('p_agb_boot_')]].std(axis=1)
-        boot_df['p_blue_sig'] = boot_df[[col for col in boot_df.columns if col.startswith('p_blue_boot_')]].std(axis=1)
-        self.boot_df = boot_df
-        return boot_df
+        boot_df['p_rsg_sig'] = np.std(line_probs[:, 0, :], axis=1, ddof=1)
+        boot_df['p_agb_sig'] = np.std(line_probs[:, 1, :], axis=1, ddof=1)
+        boot_df['p_blue_sig'] = np.std(line_probs[:, 2, :], axis=1, ddof=1)
+        self.df = boot_df
+        if savepath:
+            boot_df.to_csv(savepath, index=False)
+        else:
+            return boot_df
+    
+def run_sc(gal):
+    try:
+        print(f"Processing {gal} in process {os.getpid()}")
+        sbicat_path = ALL_CONFIGS[gal]['sbicat_path']
+        f1_, f2_ = ALL_CONFIGS[gal]['f1'], ALL_CONFIGS[gal]['f2']
+        sc = star_class(gal, sbicat_path=sbicat_path, f1=f1_, f2=f2_)
+
+        slopes, intercepts, lcut = ALL_CONFIGS[gal]['slopes'], ALL_CONFIGS[gal]['intercepts'], ALL_CONFIGS[gal]['lcut']
+        slope_errs = (min(abs(slopes[0]*0.02), 0.25), min(abs(slopes[1]*0.02), 0.25))
+        intercept_errs = (min(abs(intercepts[0]*0.01), 0.25), min(abs(intercepts[1]*0.01), 0.25))
+        savepath = ALL_CONFIGS[gal]['load_args']['procdir'] / f'{gal}_kdecat.csv'
+        sc.bootstrap_kde_class(slopes, slope_errs, intercepts, intercept_errs, lcut, n_bootstrap=2, savepath=savepath)
+    except Exception as e:
+        print(f"Error processing {gal}: {e}")
+        traceback.print_exc()
+
+if __name__ == "__main__":
+
+    import os
+    os.environ["OMP_NUM_THREADS"] = "1"
+    os.environ["MKL_NUM_THREADS"] = "1"
+    os.environ["OPENBLAS_NUM_THREADS"] = "1"
+    os.environ["NUMEXPR_NUM_THREADS"] = "1"
+
+    import torch
+    torch.set_num_threads(1)
+
+    # run kde in parallel for all galaxies over 10 cores
+    gals = list(ALL_CONFIGS.keys())[:2]
+    with Pool(processes=2) as pool:
+        pool.map(run_sc, gals)
