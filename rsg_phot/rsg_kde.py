@@ -505,6 +505,6 @@ if __name__ == "__main__":
     torch.set_num_threads(1)
 
     # run kde in parallel for all galaxies over 10 cores
-    gals = list(ALL_CONFIGS.keys())[:2]
-    with Pool(processes=2) as pool:
+    gals = list(ALL_CONFIGS.keys())
+    with Pool(processes=10) as pool:
         pool.map(run_sc, gals)
