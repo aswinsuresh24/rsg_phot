@@ -23,6 +23,7 @@ import corner
 import time
 from scipy.stats import gaussian_kde, norm, skewnorm
 from scipy.optimize import curve_fit
+from scipy.interpolate import CubicSpline
 import torch
 from sbi import utils as sbi_utils
 from sbi.neural_nets import posterior_nn
@@ -189,11 +190,20 @@ ALL_CONFIGS = {
                 'slopes': (-12.594059405940596, -12.495192307692308),
                 'intercepts': (25.888089108910894, 27.75989903846154),
                 'lcut': 20.6},
-    # 'ngc4449': {'rsgcat': os.path.join(os.pardir, 'data/dolphot/ngc4449/ngc4449_ngc4485_combined_rsgcat.csv'),
-    #             'load_args': {'gal':'ngc4449', 'procdir':os.path.join(os.pardir, 'data/dolphot/ngc4449'), 'photfile_path':None,
-    #                           'dm':0.0, 'dmerr':0.32, 'z':-0.25, 'trgb':('F090W', -2.91),
-    #                           'modeltype':'MARCS', 'comp':'sil', 'keep_narrow':False},
-    #             'model': "f607c658"}
+    'ngc4449': {'rsgcat': os.path.join(os.pardir, 'data/dolphot/ngc4449/ngc4449_sil_rsgcat.csv'),
+                'load_args': {'gal':'ngc4449', 'procdir':os.path.join(os.pardir, 'data/dolphot/ngc4449'), 'photfile_path':None,
+                              'dm':28.02, 'dmerr':0.32, 'z':-0.25, 'trgb':('F090W', 25.11),
+                              'modeltype':'MARCS', 'comp':'sil', 'keep_narrow':False},
+                'f1': 'F115W', 'f2': 'F200W',
+                'sbicat_path': Path('../data/dolphot/ngc4449/ngc4449_sbi_cat.csv'),
+                'model': "2ed03571"}, 
+    'ngc4485': {'rsgcat': os.path.join(os.pardir, 'data/dolphot/ngc4485/ngc4485_sil_rsgcat.csv'),
+                'load_args': {'gal':'ngc4485', 'procdir':os.path.join(os.pardir, 'data/dolphot/ngc4485'), 'photfile_path':None,
+                              'dm':29.67, 'dmerr':0.1, 'z':-0.25, 'trgb':('F090W', 25.62),
+                              'modeltype':'MARCS', 'comp':'sil', 'keep_narrow':False},
+                'f1': 'F115W', 'f2': 'F200W',
+                'sbicat_path': Path('../data/dolphot/ngc4485/ngc4485_sbi_cat.csv'),
+                'model': "41d94035"},  
 }
 
 def lin(x, m, c): 
@@ -241,7 +251,7 @@ class AdaptiveKDE:
         likelihoods = np.zeros((n_samples, n_classes))
         for class_idx, kde in self.kdes.items():
             likelihoods[:, class_idx] = kde(X_scaled.T)
-            # likelihoods[:, class_idx] /= np.max(likelihoods[:, class_idx])
+            likelihoods[:, class_idx] /= np.max(likelihoods[:, class_idx])
         
         # Normalize
         probs = likelihoods / likelihoods.sum(axis=1, keepdims=True)
@@ -346,6 +356,84 @@ class star_class(object):
         plt.ylabel(self.f2)
         plt.title(f'{self.gal.upper()} CMD');
 
+    def autoseed_left(self, dm=0.1):
+        dfm = self.df[self.cmd_mask]
+        lums = dfm['luminosity_median']
+        rsg_m, rsg_cl = dfm[f'{self.f2}_mag'], dfm[f'{self.f1}_mag'] - dfm[f'{self.f2}_mag']
+        lmask = (lums > 4.5) 
+        f200w_mean, f200w_sig = np.mean(rsg_m[lmask]), np.std(rsg_m[lmask], ddof=1)
+        m0 = f200w_mean + f200w_sig
+        m99 = np.percentile(rsg_m[lmask], 5)
+        left_cols, right_cols, mag_vals = [], [], []
+
+        for i in range(int((m0-m99) // dm)):
+            mask_ = (rsg_m > m0 - i*dm) & (rsg_m < m0 - (i-1)*dm)
+            if mask_.sum() < 100:
+                continue
+            x_ = rsg_cl[mask_].values
+            y_ = rsg_m[mask_].values
+            mag = np.median(y_)
+            
+            iqr = np.percentile(x_, 75) - np.percentile(x_, 25)
+            h = 2 * iqr * len(x_)**(-1/3)
+            nbins = int((max(x_) - min(x_)) / h) 
+
+            dens, c_ = np.histogram(x_, bins=nbins, density=True)
+            col = (c_[1:] + c_[:-1]) / 2
+            half_max = np.max(dens) * 0.5
+
+            cs = CubicSpline(col, dens)
+            new_cl = np.linspace(min(col), max(col), 2000)
+            new_dens = cs(new_cl)
+            
+            dmask = new_dens > half_max
+            left = new_cl[dmask][0]
+            right = new_cl[dmask][-1]
+
+            left_cols.append(left)
+            right_cols.append(right)
+            mag_vals.append(mag)
+
+        return np.array(left_cols), np.array(right_cols), np.array(mag_vals)
+
+    def autoseed_right(self, dm=0.1):
+        dfm = self.df[self.cmd_mask]
+        lums = dfm['luminosity_median']
+        rsg_m, rsg_cl = dfm[f'{self.f2}_mag'], dfm[f'{self.f1}_mag'] - dfm[f'{self.f2}_mag']
+        lmask = (lums < 4.5) & (lums > 4.0) 
+        f200w_mean, f200w_sig = np.mean(rsg_m[lmask]), np.std(rsg_m[lmask], ddof=1)
+        m99 = f200w_mean - f200w_sig
+        m0 = np.percentile(rsg_m[lmask], 95)
+        right_cols, mag_vals = [], []
+
+        for i in range(int((m0-m99) // dm)):
+            mask_ = (rsg_m > m0 - i*dm) & (rsg_m < m0 - (i-1)*dm)
+            if mask_.sum() < 100:
+                continue
+            x_ = rsg_cl[mask_]
+            y_ = rsg_m[mask_]
+            mag = np.median(y_)
+            
+            iqr = np.percentile(x_, 75) - np.percentile(x_, 25)
+            h = 2 * iqr * len(x_)**(-1/3)
+            nbins = int((max(x_) - min(x_)) / h) 
+
+            dens, c_ = np.histogram(x_, bins=nbins, density=True)
+            col = (c_[1:] + c_[:-1]) / 2
+            half_max = np.max(dens) * 0.4
+
+            cs = CubicSpline(col, dens)
+            new_cl = np.linspace(min(col), max(col), 2000)
+            new_dens = cs(new_cl)
+            
+            dmask = new_dens > half_max
+            right = new_cl[dmask][0]
+
+            right_cols.append(right)
+            mag_vals.append(mag)
+
+        return np.array(right_cols), np.array(mag_vals)
+    
     def select_seed_sample(self, slopes, intercepts, lcut, plot=False, plot_3d=False):
         rsg_cl = self.df[self.cmd_mask][f'{self.f1}_mag'] - self.df[self.cmd_mask][f'{self.f2}_mag']
         rsg_m = self.df[self.cmd_mask][f'{self.f2}_mag']
@@ -397,10 +485,10 @@ class star_class(object):
             
         return seed_df
 
-    def kde_class(self, seed_df=None, assign_class=True):
+    def kde_class(self, seed_df=None, assign_class=True, alpha=0.5):
         X = seed_df[['temperature_median', 'luminosity_median', 'tau_V_median']].values
         y = seed_df['class'].map({'RSG':0, 'AGB':1, 'Blue':2}).values
-        self.kde = AdaptiveKDE(alpha=0.5).fit(X, y)
+        self.kde = AdaptiveKDE(alpha=alpha).fit(X, y)
 
         X_pred = self.df[['temperature_median', 'luminosity_median', 'tau_V_median']].values
         if assign_class:
@@ -488,7 +576,7 @@ def run_sc(gal):
         slope_errs = (min(abs(slopes[0]*0.02), 0.25), min(abs(slopes[1]*0.02), 0.25))
         intercept_errs = (min(abs(intercepts[0]*0.01), 0.25), min(abs(intercepts[1]*0.01), 0.25))
         savepath = ALL_CONFIGS[gal]['load_args']['procdir'] / f'{gal}_kdecat.csv'
-        sc.bootstrap_kde_class(slopes, slope_errs, intercepts, intercept_errs, lcut, n_bootstrap=2, savepath=savepath)
+        sc.bootstrap_kde_class(slopes, slope_errs, intercepts, intercept_errs, lcut, n_bootstrap=100, savepath=savepath)
     except Exception as e:
         print(f"Error processing {gal}: {e}")
         traceback.print_exc()
