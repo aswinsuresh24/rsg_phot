@@ -352,6 +352,7 @@ def extract_seeds(validated, results, mag, color, lcut, prob_threshold=0.5):
         slice_mask  = np.where((mag >= m_lo) & (mag < m_hi))[0]
         c           = color[slice_mask]
         m_          = mag[slice_mask]
+        rsg_mean, rsg_sig = cand["mean"], cand["sigma"]
  
         if len(c) == 0:
             continue
@@ -367,7 +368,11 @@ def extract_seeds(validated, results, mag, color, lcut, prob_threshold=0.5):
  
         # Sorted indices for AGB (redder) and blue (bluer) components
         agb_sorted_idxs  = list(range(rsg_sorted_idx + 1, n_comp))
-        blue_sorted_idxs = list(range(0, rsg_sorted_idx))
+        if rsg_sorted_idx == 0: 
+            blue_comp = 1
+        else:
+            blue_comp = rsg_sorted_idx
+        blue_sorted_idxs = list(range(0, blue_comp))
  
         # Map sorted indices - GMM internal indices
         agb_internal_idxs  = [int(order[i]) for i in agb_sorted_idxs]
@@ -404,10 +409,17 @@ def extract_seeds(validated, results, mag, color, lcut, prob_threshold=0.5):
             mask_blue &= ~mask_rsg
             if agb_internal_idxs:
                 mask_blue &= ~mask_agb
+            
+            #stars 2 sigma bluer than rsgs should be included in the blue sample even if they have low blue_post, since GMM can fail to separate them
+            blue_color_cut = rsg_mean - 3 * rsg_sig
+            missed_blue_mask = (c < blue_color_cut)
+            mask_blue |= missed_blue_mask
             blue_indices.extend(slice_mask[mask_blue].tolist())
             blue_probs.extend(blue_post[mask_blue].tolist())
 
-        luminous_mask = m_ > lcut
+            # remove these stars from the RSG sample if they were included due to high AGB posterior
+            rsg_indices = [idx for idx in rsg_indices if idx not in slice_mask[missed_blue_mask]]
+            rsg_probs = [prob for idx, prob in zip(rsg_indices, rsg_probs) if idx not in slice_mask[missed_blue_mask]]
         
  
     return (
@@ -446,10 +458,9 @@ def plot_rsg_chain_on_cmd(validated, mag, color, rsg_indices=None, ax=None):
                     markersize=5, elinewidth=1.5, alpha=0.85)
 
     ax.invert_yaxis()
-    ax.set_xlabel("Colour (F115W − F200W)")
-    ax.set_ylabel("Magnitude (F200W)")
-    ax.set_title("Chained RSG component\n"
-                 "red=normal  orange=recovered  purple=interpolated")
+    ax.set_xlabel("F115W - F200W")
+    ax.set_ylabel("F200W)")
+    ax.set_title("Chained RSG seed")
     if rsg_indices is not None:
         ax.legend(markerscale=4, fontsize=8)
     return fig, ax
@@ -496,9 +507,9 @@ def plot_chain_on_cmd(validated, mag, color,
                     markersize=5, elinewidth=1.5, alpha=0.85, zorder=5)
  
     ax.invert_yaxis()
-    ax.set_xlabel("Colour (F115W - F200W)")
-    ax.set_ylabel("Magnitude (F200W)")
-    ax.set_title("Seed populations  |  RSG chain: red=normal  orange=recovered  purple=interpolated")
+    ax.set_xlabel("F115W - F200W")
+    ax.set_ylabel("F200W")
+    ax.set_title("Seed populations")
     ax.legend(markerscale=4, fontsize=8)
     return fig, ax
 
@@ -529,9 +540,9 @@ def plot_component_tracking(results, validated=None, ax=None):
                        s=80, c="red", zorder=5, marker="*")
 
     ax.invert_yaxis()
-    ax.set_xlabel("Colour (F115W − F200W)")
-    ax.set_ylabel("Magnitude (F200W)")
-    ax.set_title("All GMM components (size ∝ weight)\nRSG chain = red stars")
+    ax.set_xlabel("F115W  F200W")
+    ax.set_ylabel("F200W")
+    ax.set_title("GMM components")
     return fig, ax
 
 
