@@ -36,6 +36,9 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import GridSearchCV
 from sklearn.neighbors import KernelDensity
 from sklearn.decomposition import PCA
+from sklearn.mixture import GaussianMixture
+from numpy.polynomial import polynomial as P
+from scipy.stats import median_abs_deviation
 from plotly import express as px
 import signal
 import copy
@@ -78,9 +81,7 @@ ALL_CONFIGS = {
                 'model': "957a9f22",
                 'f1': 'F115W', 'f2': 'F200W',
                 'sbicat_path': Path('../data/dolphot/ngc5236/ngc5236_sbi_cat.csv'),
-                'slopes': (-10.997118155619603, -8.299065420560746),
-                'intercepts': (25.027455331412106, 26.080644859813084),
-                'lcut': 20.0},
+                'rsg_color': 0.4, 'dm': 0.4},
     'ngc5194': {'rsgcat': Path('../data/dolphot/ngc5194/ngc5194_sil_rsgcat.csv'),
                 'load_args': {'gal':'ngc5194',
                               'procdir':Path('../data/dolphot/ngc5194'), 'photfile_path':None,
@@ -90,9 +91,7 @@ ALL_CONFIGS = {
                 'model': "fb3481bf",
                 'f1': 'F115W', 'f2': 'F200W',
                 'sbicat_path': Path('../data/dolphot/ngc5194/ngc5194_sbi_cat.csv'),
-                'slopes': (-11.38235294117647, -8.632587859424925),
-                'intercepts':(25.339029411764706, 27.097386581469653),
-                'lcut': 21.15},
+                'rsg_color': 0.4, 'dm': 0.5},
     'ngc4258': {'rsgcat': Path('../data/dolphot/ngc4258/ngc4258_sil_rsgcat.csv'),
                 'load_args': {'gal':'ngc4258',
                               'procdir':Path('../data/dolphot/ngc4258'), 'photfile_path':None,
@@ -102,9 +101,7 @@ ALL_CONFIGS = {
                 'model': "ef220e94",
                 'f1': 'F115W', 'f2': 'F210M',
                 'sbicat_path': Path('../data/dolphot/ngc4258/ngc4258_sbi_cat.csv'),
-                'slopes': (-9.50366300366301, -9.599206349206352),
-                'intercepts':(24.101245421245423, 26.033015873015874),
-                'lcut': 21.0},
+                'rsg_color': 0.4, 'dm': 0.5},
     'ngc628': {'rsgcat': Path('../data/dolphot/ngc628/ngc628_sil_rsgcat.csv'),
                'load_args': {'gal':'ngc628',
                              'procdir':Path('../data/dolphot/ngc628'), 'photfile_path':None,
@@ -114,9 +111,7 @@ ALL_CONFIGS = {
                'model': "89285257",
                'f1': 'F115W', 'f2': 'F200W',
                'sbicat_path': Path('../data/dolphot/ngc628/ngc628_sbi_cat.csv'),
-               'slopes': (-12.158018867924522, -11.299303944315538),
-               'intercepts': (27.09827830188679, 28.472839907192572),
-               'lcut': 22.0},
+               'rsg_color': 0.4, 'dm': 0.5},
     'ngc5643': {'rsgcat': Path('../data/dolphot/ngc5643/ngc5643_sil_rsgcat.csv'),
                 'load_args': {'gal':'ngc5643',
                               'procdir':Path('../data/dolphot/ngc5643'), 'photfile_path':None,
@@ -126,9 +121,7 @@ ALL_CONFIGS = {
                 'model': "be8ad86d",
                 'f1': 'F115W', 'f2': 'F200W',
                 'sbicat_path': Path('../data/dolphot/ngc5643/ngc5643_sbi_cat.csv'),
-                'slopes': (-21.6048780487805, -12.375527426160339),
-                'intercepts': (30.181629268292685, 29.860953586497892),
-                'lcut': 22.0},
+                'rsg_color': 0.4, 'dm': 0.5},
     'ngc7320': {'rsgcat': Path('../data/dolphot/ngc7320/ngc7320_sil_rsgcat.csv'),
                 'load_args': {'gal':'ngc7320',
                               'procdir':Path('../data/dolphot/ngc7320'), 'photfile_path':None,
@@ -138,8 +131,6 @@ ALL_CONFIGS = {
                 'model': "c74a700a",
                 'f1': 'F090W', 'f2': 'F200W',
                 'sbicat_path': Path('../data/dolphot/ngc7320/ngc7320_sbi_cat.csv'),
-                'slopes': (-8.544152744630077, -8.814249363867678),
-                'intercepts': (30.82461097852029, 32.85034096692111),
                 'lcut': 23.0},
     'ngc1367': {'rsgcat': Path('../data/dolphot/ngc1367/ngc1367_sil_rsgcat.csv'),
                 'load_args': {'gal':'ngc1367',
@@ -150,9 +141,7 @@ ALL_CONFIGS = {
                 'model': "27370b04",
                 'f1': 'F150W', 'f2': 'F200W',
                 'sbicat_path': Path('../data/dolphot/ngc1367/ngc1367_sbi_cat.csv'),
-                'slopes': (-16.12578616352201, -17.630630630630638),
-                'intercepts': (29.09827830188679, 30.472839907192572),
-                'lcut': 22.0},
+                'rsg_color': -0.06, 'dm': 0.5}, # minweight 0.1
     'ngc1365': {'rsgcat': Path('../data/dolphot/ngc1365/ngc1365_sil_rsgcat.csv'),
                 'load_args': {'gal':'ngc1365',
                               'procdir':Path('../data/dolphot/ngc1365'), 'photfile_path':None,
@@ -162,9 +151,7 @@ ALL_CONFIGS = {
                 'model': "05602ed7",
                 'f1': 'F115W', 'f2': 'F200W',
                 'sbicat_path': Path('../data/dolphot/ngc1365/ngc1365_sbi_cat.csv'),
-                'slopes': (-11.168421052631578, -11.948207171314737),
-                'intercepts': (27.26592631578947, 29.59770517928287),
-                'lcut': 23.0},
+                'rsg_color': 0.4, 'dm': 0.5},
     'ngc4536': {'rsgcat': Path('../data/dolphot/ngc4536/ngc4536_sil_rsgcat.csv'),
                 'load_args': {'gal':'ngc4536',
                               'procdir':Path('../data/dolphot/ngc4536'), 'photfile_path':None,
@@ -174,10 +161,7 @@ ALL_CONFIGS = {
                 'model': "9badc531",
                 'f1': 'F150W', 'f2': 'F200W',
                 'sbicat_path': Path('../data/dolphot/ngc4536/ngc4536_sbi_cat.csv'),
-                'slopes': (-18.852941176470587, -17.630630630630638),
-                'intercepts': (23.947, 25.269297297297296),
-                'lcut': 22.6
-                },
+                'rsg_color': 0.0, 'dm': 0.5},
     'ngc5457': {'rsgcat': Path('../data/dolphot/ngc5457/ngc5457_sil_rsgcat.csv'),
                 'load_args': {'gal':'ngc5457',
                               'procdir':Path('../data/dolphot/ngc5457'), 'photfile_path':None,
@@ -187,23 +171,23 @@ ALL_CONFIGS = {
                 'model': "c2583613",
                 'f1': 'F115W', 'f2': 'F200W',
                 'sbicat_path': Path('../data/dolphot/ngc5457/ngc5457_sbi_cat.csv'),
-                'slopes': (-12.594059405940596, -12.495192307692308),
-                'intercepts': (25.888089108910894, 27.75989903846154),
-                'lcut': 20.6},
+                'rsg_color': 0.4, 'dm': 0.5},
     'ngc4449': {'rsgcat': os.path.join(os.pardir, 'data/dolphot/ngc4449/ngc4449_sil_rsgcat.csv'),
                 'load_args': {'gal':'ngc4449', 'procdir':os.path.join(os.pardir, 'data/dolphot/ngc4449'), 'photfile_path':None,
                               'dm':28.02, 'dmerr':0.32, 'z':-0.25, 'trgb':('F090W', 25.11),
                               'modeltype':'MARCS', 'comp':'sil', 'keep_narrow':False},
                 'f1': 'F115W', 'f2': 'F200W',
                 'sbicat_path': Path('../data/dolphot/ngc4449/ngc4449_sbi_cat.csv'),
-                'model': "2ed03571"}, 
+                'model': "2ed03571",
+                'rsg_color': 0.3, 'dm': 0.3}, # single seed selection iteration (skip trend removal) 
     'ngc4485': {'rsgcat': os.path.join(os.pardir, 'data/dolphot/ngc4485/ngc4485_sil_rsgcat.csv'),
                 'load_args': {'gal':'ngc4485', 'procdir':os.path.join(os.pardir, 'data/dolphot/ngc4485'), 'photfile_path':None,
                               'dm':29.67, 'dmerr':0.1, 'z':-0.25, 'trgb':('F090W', 25.62),
                               'modeltype':'MARCS', 'comp':'sil', 'keep_narrow':False},
                 'f1': 'F115W', 'f2': 'F200W',
                 'sbicat_path': Path('../data/dolphot/ngc4485/ngc4485_sbi_cat.csv'),
-                'model': "41d94035"},  
+                'model': "41d94035",
+                'rsg_color': 0.3, 'dm': 0.5}, 
 }
 
 def lin(x, m, c): 
@@ -263,7 +247,8 @@ class star_class(object):
         self.gal = gal
         if not sbicat_path.exists():
             raise FileNotFoundError(f"Catalog {sbicat_path} not found")
-        self.df = pd.read_csv(sbicat_path)
+        self.sbicat_path = sbicat_path  
+        self.df = pd.read_csv(self.sbicat_path)
         disc_ = (self.df['use_res'].isna()) | (self.df['use_res'] == 0) | (self.df['temperature_median'].isna()) | \
                 (self.df['luminosity_median'].isna()) | (self.df['tau_V_median'].isna())
         self.df = self.df[~disc_]
@@ -307,7 +292,7 @@ class star_class(object):
 
         return rsgloader, sedfit, sedfit_mc, hatp_x_y
 
-    def plot_cmd(self, slopes=None, intercepts=None, lcut=None):
+    def plot_cmd(self):
         rsg_cl = self.df[self.cmd_mask][f'{self.f1}_mag'] - self.df[self.cmd_mask][f'{self.f2}_mag']
         rsg_m = self.df[self.cmd_mask][f'{self.f2}_mag']
 
@@ -315,20 +300,6 @@ class star_class(object):
         ax.hexbin(rsg_cl, rsg_m, cmap = 'viridis', bins=200, norm=mpl.colors.LogNorm());
         ax.invert_yaxis()
         ax.grid(ls='--', alpha=0.3)
-
-        if slopes:
-            self.slopes = slopes
-            self.intercepts = intercepts
-            self.lcut = lcut
-            xs = np.linspace(-0.5, 1.5, 100)
-            left = lin(xs, slopes[0], intercepts[0])
-            right = lin(xs, slopes[1], intercepts[1])
-            left_mask = (left > np.min(rsg_m)) & (left < np.max(rsg_m)) 
-            right_mask = (right < np.max(rsg_m)) & (right > lcut) 
-            ax.plot(xs[left_mask], left[left_mask], color='orange', lw=2, ls='--', label='left edge')
-            ax.plot(xs[right_mask], right[right_mask], color='orange', lw=2, ls='--', label='right edge')
-            ax.plot([np.max(xs[right_mask]), np.max(rsg_cl)], [lcut, lcut], color='orange', lw=2, ls='--', label='logL > 5')
-            ax.legend()
 
         ax.set_xlabel(f'{self.f1}-{self.f2}')
         ax.set_ylabel(self.f2)
@@ -355,135 +326,41 @@ class star_class(object):
         plt.xlabel(f'{self.f1}-{self.f2}')
         plt.ylabel(self.f2)
         plt.title(f'{self.gal.upper()} CMD');
-
-    def autoseed_left(self, dm=0.1):
-        dfm = self.df[self.cmd_mask]
-        lums = dfm['luminosity_median']
-        rsg_m, rsg_cl = dfm[f'{self.f2}_mag'], dfm[f'{self.f1}_mag'] - dfm[f'{self.f2}_mag']
-        lmask = (lums > 4.5) 
-        f200w_mean, f200w_sig = np.mean(rsg_m[lmask]), np.std(rsg_m[lmask], ddof=1)
-        m0 = f200w_mean + f200w_sig
-        m99 = np.percentile(rsg_m[lmask], 5)
-        left_cols, right_cols, mag_vals = [], [], []
-
-        for i in range(int((m0-m99) // dm)):
-            mask_ = (rsg_m > m0 - i*dm) & (rsg_m < m0 - (i-1)*dm)
-            if mask_.sum() < 100:
-                continue
-            x_ = rsg_cl[mask_].values
-            y_ = rsg_m[mask_].values
-            mag = np.median(y_)
-            
-            iqr = np.percentile(x_, 75) - np.percentile(x_, 25)
-            h = 2 * iqr * len(x_)**(-1/3)
-            nbins = int((max(x_) - min(x_)) / h) 
-
-            dens, c_ = np.histogram(x_, bins=nbins, density=True)
-            col = (c_[1:] + c_[:-1]) / 2
-            half_max = np.max(dens) * 0.5
-
-            cs = CubicSpline(col, dens)
-            new_cl = np.linspace(min(col), max(col), 2000)
-            new_dens = cs(new_cl)
-            
-            dmask = new_dens > half_max
-            left = new_cl[dmask][0]
-            right = new_cl[dmask][-1]
-
-            left_cols.append(left)
-            right_cols.append(right)
-            mag_vals.append(mag)
-
-        return np.array(left_cols), np.array(right_cols), np.array(mag_vals)
-
-    def autoseed_right(self, dm=0.1):
-        dfm = self.df[self.cmd_mask]
-        lums = dfm['luminosity_median']
-        rsg_m, rsg_cl = dfm[f'{self.f2}_mag'], dfm[f'{self.f1}_mag'] - dfm[f'{self.f2}_mag']
-        lmask = (lums < 4.5) & (lums > 4.0) 
-        f200w_mean, f200w_sig = np.mean(rsg_m[lmask]), np.std(rsg_m[lmask], ddof=1)
-        m99 = f200w_mean - f200w_sig
-        m0 = np.percentile(rsg_m[lmask], 95)
-        right_cols, mag_vals = [], []
-
-        for i in range(int((m0-m99) // dm)):
-            mask_ = (rsg_m > m0 - i*dm) & (rsg_m < m0 - (i-1)*dm)
-            if mask_.sum() < 100:
-                continue
-            x_ = rsg_cl[mask_]
-            y_ = rsg_m[mask_]
-            mag = np.median(y_)
-            
-            iqr = np.percentile(x_, 75) - np.percentile(x_, 25)
-            h = 2 * iqr * len(x_)**(-1/3)
-            nbins = int((max(x_) - min(x_)) / h) 
-
-            dens, c_ = np.histogram(x_, bins=nbins, density=True)
-            col = (c_[1:] + c_[:-1]) / 2
-            half_max = np.max(dens) * 0.4
-
-            cs = CubicSpline(col, dens)
-            new_cl = np.linspace(min(col), max(col), 2000)
-            new_dens = cs(new_cl)
-            
-            dmask = new_dens > half_max
-            right = new_cl[dmask][0]
-
-            right_cols.append(right)
-            mag_vals.append(mag)
-
-        return np.array(right_cols), np.array(mag_vals)
     
-    def select_seed_sample(self, slopes, intercepts, lcut, plot=False, plot_3d=False):
-        rsg_cl = self.df[self.cmd_mask][f'{self.f1}_mag'] - self.df[self.cmd_mask][f'{self.f2}_mag']
-        rsg_m = self.df[self.cmd_mask][f'{self.f2}_mag']
+    def select_seed_sample(self, rsg_color, dm=0.5, prob_threshold = (0.75, 0.75, 0.5), minweight=0.02, magbins=None, plot=False):
+        seed_gen = rsg_seed(self.gal, self.sbicat_path, self.f1, self.f2, rsg_color, dm=dm)
+        if magbins is not None:
+            seed_gen.mag_bins = magbins
+        seed_df, validated, trend_fn, results = seed_gen.run_seed_selection(plot=plot, prob_threshold=prob_threshold, min_weight=minweight)
 
-        m2 = rsg_m > lin(rsg_cl, slopes[0], intercepts[0])
-        blue_cut = (rsg_m < lin(rsg_cl, slopes[0], intercepts[0] - 0.5)) #| (~m2 & (rsg_m > 24))
-        m3 = rsg_m < lin(rsg_cl, slopes[1], intercepts[1])
-        m4 = rsg_m < lcut
-
-        rsg_lit = self.df[self.cmd_mask][(m2&m3) | (~m3 & m4)]
-        temperature_mask = (np.log10(rsg_lit['temperature_median']) < np.log10(4500)) & (np.log10(rsg_lit['temperature_median']) > np.log10(3200))
-        luminosity_mask = (rsg_lit['luminosity_median'] < 4.5) & (rsg_lit['tau_V_median'] > 0.5)
-        rsg_lit = rsg_lit[temperature_mask & ~luminosity_mask]
-
-        m3 = rsg_m < lin(rsg_cl, slopes[1], intercepts[1] + 0.3)
-        m4 = rsg_m < lcut + 0.2
-        agb_lit = self.df[self.cmd_mask][~m3 & ~m4]
-        blue_lit = self.df[self.cmd_mask][blue_cut]
-
-        rsg_lit['class'] = 'RSG'
-        agb_lit['class'] = 'AGB'
-        blue_lit['class'] = 'Blue'  
-        seed_df = pd.concat([rsg_lit, agb_lit, blue_lit], ignore_index=True)
-        self.seed_df = seed_df
-
-        if plot:
-            self.plot_cmd(slopes, intercepts, lcut)
-            plt.scatter(rsg_lit[f'{self.f1}_mag'] - rsg_lit[f'{self.f2}_mag'], rsg_lit[f'{self.f2}_mag'], color='red', s=1, label='RSG (seed)')
-            plt.scatter(agb_lit[f'{self.f1}_mag'] - agb_lit[f'{self.f2}_mag'], agb_lit[f'{self.f2}_mag'], color='coral', s=1, label='AGB (seed)')
-            plt.scatter(blue_lit[f'{self.f1}_mag'] - blue_lit[f'{self.f2}_mag'], blue_lit[f'{self.f2}_mag'], color='cyan', s=1, label='Blue (seed)')
-            plt.legend()
-
-        if plot_3d:
-            fig = px.scatter_3d(seed_df, x='temperature_median', y='luminosity_median', z='tau_V_median', color='class', 
-                                hover_data=['temperature_median', 'luminosity_median', 'tau_V_median'], symbol='class', 
-                                color_discrete_map={'RSG':'royalblue', 'AGB':'coral', 'Blue':'magenta'},
-                                title=f'{self.gal.upper()} Literature Sample')
-            #update size of points and opacity
-            fig.update_traces(marker=dict(size=3, opacity=0.3))
-            fig.update_layout(scene = dict(
-                                xaxis_title='Temperature (K)',
-                                yaxis_title='Luminosity (Lsun)',
-                                zaxis_title='Tau'),
-                                legend_title='Class')
-            fig.show()
-
-            #save figure to html
-            fig.write_html(f'../plots/{self.gal}_lit_sample_3d.html')
+        for _, pl in zip(range(2), [False, True]):
+            seed_gen.colors -= np.vectorize(trend_fn)(seed_gen.mags)
+            seed_gen.rsg_color = 0.0
+            seed_df, validated, trend_fn, results = seed_gen.run_seed_selection(plot=pl, prob_threshold=prob_threshold, min_weight=minweight)
             
         return seed_df
+    
+    def plot_seed_cmd(self, seed_df):
+        self.plot_cmd()
+        plt.scatter(seed_df[f'{self.f1}_mag'] - seed_df[f'{self.f2}_mag'], seed_df[f'{self.f2}_mag'], 
+                    c=seed_df['class'].map({'RSG': 'coral', 'AGB': 'orange', 'Blue': 'cyan'}), s=2);
+        plt.show()
+
+    def plot_seed_3d(self, seed_df):
+        fig = px.scatter_3d(seed_df, x='temperature_median', y='luminosity_median', z='tau_V_median', color='class', 
+                            hover_data=['temperature_median', 'luminosity_median', 'tau_V_median'], symbol='class', 
+                            color_discrete_map={'RSG':'royalblue', 'AGB':'coral', 'Blue':'magenta'},
+                            title=f'{self.gal.upper()} Seed Sample')
+        #update size of points and opacity
+        fig.update_traces(marker=dict(size=5, opacity=0.3))
+        fig.update_layout(scene = dict(
+                            xaxis_title='Temperature (K)',
+                            yaxis_title='Luminosity (Lsun)',
+                            zaxis_title='Tau'),
+                            legend_title='Class')
+        fig.show()
+
+        fig.write_html(f'../plots/{self.gal}_seed_sample_3d.html')
 
     def kde_class(self, seed_df=None, assign_class=True, alpha=0.5):
         X = seed_df[['temperature_median', 'luminosity_median', 'tau_V_median']].values
@@ -521,7 +398,7 @@ class star_class(object):
         fig.write_html(f'../plots/{self.gal}_kde_classification_3d.html')
 
     def plot_kde_class_cmd(self, plot_class=None):
-        self.plot_cmd(self.slopes, self.intercepts, self.lcut)
+        self.plot_cmd()
         class_colors = {'RSG':'royalblue', 'AGB':'coral', 'Blue':'magenta'}
         if plot_class:
             class_colors = {plot_class: class_colors[plot_class]}
@@ -531,10 +408,11 @@ class star_class(object):
                         color=color, s=1, label=class_label)
 
     def plot_rsg_cmd(self, pcut=0.7):
-        self.plot_cmd(self.slopes, self.intercepts, self.lcut)
+        self.plot_cmd()
         rsg_subset = self.df[self.cmd_mask & (self.df['p_rsg'] > pcut)]
         plt.scatter(rsg_subset[f'{self.f1}_mag'] - rsg_subset[f'{self.f2}_mag'], rsg_subset[f'{self.f2}_mag'], 
                     c=rsg_subset['p_rsg'], s=5, cmap='inferno', norm=mpl.colors.LogNorm())
+        plt.colorbar(label='P(RSG)')
         
     def bootstrap_kde_class(self, slopes, slope_errs, intercepts, intercept_errs, lcut, n_bootstrap=100, savepath=None):
         boot_df = self.df.copy()
@@ -564,6 +442,649 @@ class star_class(object):
             boot_df.to_csv(savepath, index=False)
         else:
             return boot_df
+        
+
+class rsg_seed(star_class):
+    def __init__(self, gal:str, sbicat_path:Path, f1:str, f2:str, rsg_color:float, dm=0.5):
+        super().__init__(gal, sbicat_path, f1, f2)
+        self.rsg_color = rsg_color
+        self.lcut = self.get_lcut()
+        self.logger.info(f"Initial RSG color cut: {self.rsg_color:.2f}, luminosity cut: {self.lcut:.2f}")
+
+        self.colors, self.mags = self.df[self.cmd_mask][f'{self.f1}_mag'] - self.df[self.cmd_mask][f'{self.f2}_mag'], self.df[self.cmd_mask][f'{self.f2}_mag']
+        self.colors, self.mags = self.colors.values, self.mags.values
+        magmin, magmax = np.percentile(self.mags, [0.1, 99.9])
+        self.mag_bins = np.arange(magmin, magmax+dm, dm) 
+        self.magbins = np.clip(self.mag_bins, magmin, magmax)
+
+    def get_lcut(self):
+        rsg_cl = self.df[self.cmd_mask][f'{self.f1}_mag'] - self.df[self.cmd_mask][f'{self.f2}_mag']
+        rsg_m = self.df[self.cmd_mask][f'{self.f2}_mag']
+        lums = self.df[self.cmd_mask]['luminosity_median']
+        lmask = (lums > 4.97) & (lums < 5.03) & (rsg_cl > np.median(rsg_cl))
+        f200w_mean, f200w_sig = np.mean(rsg_m[lmask]), np.std(rsg_m[lmask], ddof=1)
+        return f200w_mean + f200w_sig
+    
+    def fit_gmm_bic(self, colors, n_min=3, n_max=7, n_init=5, random_state=42):
+        """
+        Fit GMMs with n_min..n_max components to a 1-D colour array.
+        Returns the model with the lowest BIC, together with the BIC curve.
+
+        Parameters
+        ----------
+        colors        : (N,) array of colour values for stars in one magnitude slice
+        n_min, n_max  : range of component counts to try
+        n_init        : number of random initialisations per fit (guards against
+                        local minima)
+        random_state  : RNG seed for reproducibility
+
+        Returns
+        -------
+        best_gmm : fitted GaussianMixture with the lowest BIC
+        bics     : list of BIC values for n_min..n_max
+        n_range  : list of n values tried
+        """
+        bics, models = [], []
+        n_range = list(range(n_min, n_max + 1))
+
+        for n in n_range:
+            gmm = GaussianMixture(
+                n_components=n,
+                covariance_type="full",
+                n_init=n_init,
+                random_state=random_state,
+            )
+            gmm.fit(colors.reshape(-1, 1))
+            bics.append(gmm.bic(colors.reshape(-1, 1)))
+            models.append(gmm)
+
+        best_idx = int(np.argmin(bics))
+        return models[best_idx], bics, n_range
+    
+    def slice_and_fit(self, mag, color, mag_bins, n_max=5, min_stars=30, n_init=5):
+        """
+        Slice the CMD into magnitude bins and fit a BIC-optimal GMM per slice.
+
+        Parameters
+        ----------
+        mag, color : (N,) arrays
+        mag_bins   : bin edges (e.g. np.arange(mag.min(), mag.max(), 0.3))
+        n_max      : maximum number of GMM components to try
+        min_stars  : slices with fewer stars are skipped
+        n_init     : passed to fit_gmm_bic
+
+        Returns
+        -------
+        results : dict  {(m_lo, m_hi): slice_result | None}
+            Each slice_result contains:
+                gmm     - fitted GaussianMixture
+                bics    - BIC curve
+                n_range - n values tried
+                n_best  - best fit number of components
+                means   - component means sorted blue-red
+                sigmas  - component standard deviations (same order)
+                weights - component weights (same order)
+                colors  - colour values of stars in this slice
+                mag_mid - midpoint of the magnitude bin
+        """
+        results = {}
+
+        for i in range(len(mag_bins) - 1):
+            m_lo, m_hi = mag_bins[i], mag_bins[i + 1]
+            mask = (mag >= m_lo) & (mag < m_hi)
+            c = color[mask]
+
+            if len(c) < min_stars:
+                results[(m_lo, m_hi)] = None
+                continue
+
+            best_gmm, bics, n_range = self.fit_gmm_bic(c, n_max=n_max, n_init=n_init)
+
+            order   = np.argsort(best_gmm.means_.flatten())
+            means   = best_gmm.means_.flatten()[order]
+            sigmas  = np.sqrt(best_gmm.covariances_.flatten())[order]
+            weights = best_gmm.weights_[order]
+
+            results[(m_lo, m_hi)] = {
+                "gmm":     best_gmm,
+                "bics":    bics,
+                "n_range": n_range,
+                "n_best":  best_gmm.n_components,
+                "means":   means,
+                "sigmas":  sigmas,
+                "weights": weights,
+                "colors":  c,
+                "mag_mid": np.median(mag[mask]),
+            }
+
+        return results
+        
+    def initialize_rsg_chain(self, results, min_weight=0.05, exp_rsg_color=0.5):
+        """
+        Identify the RSG candidate component in each slice based on the expected
+        color of the RSG branch
+
+        Parameters
+        ----------
+        results    : output of slice_and_fit
+        min_weight : components with weight below this are ignored
+
+        Returns
+        -------
+        candidates : dict  {(m_lo, m_hi): candidate_dict | None}
+            Each candidate_dict contains mean, sigma, weight, gmm_idx (sorted),
+            is_reddest flag, and mag_mid.
+        """
+        candidates = {}
+
+        for key, res in results.items():
+            if res is None:
+                candidates[key] = None
+                continue
+
+            # Filter negligible components
+            ok = np.array(res["weights"]) >= min_weight
+            means   = np.array(res["means"])[ok]
+            sigmas  = np.array(res["sigmas"])[ok]
+            weights = np.array(res["weights"])[ok]
+            # Keep track of original sorted indices so we can map back to GMM
+            orig_idx = np.where(ok)[0]
+
+            if len(means) < 2:
+                candidates[key] = None
+                continue
+
+            rsg_local_idx    = np.argmin(np.abs(means - exp_rsg_color))  # closest to expected RSG color
+            rsg_sorted_idx   = int(orig_idx[rsg_local_idx]) # index in sorted order
+
+            candidates[key] = {
+                "mean":       float(means[rsg_local_idx]),
+                "sigma":      float(sigmas[rsg_local_idx]),
+                "weight":     float(weights[rsg_local_idx]),
+                "gmm_idx":    rsg_sorted_idx,
+                "is_reddest": rsg_sorted_idx == len(res["means"]) - 1,
+                "mag_mid":    res["mag_mid"],
+                "key":        key,
+            }
+
+        return candidates
+    
+    def fit_and_validate_chain(self, candidates, deg=2, sigma_clip=2.0):
+        """
+        Fit a smooth polynomial (colour vs magnitude) through the per-slice RSG
+        candidates and sigma-clip outliers.  Outlier slices are typically ones
+        where the GMM failed (merged blue+RSG or split AGB into RSG region).
+
+        Parameters
+        ----------
+        candidates : output of initialize_chain_by_gap
+        deg        : polynomial degree (1 = linear, 2 = quadratic)
+        sigma_clip : rejection threshold in units of MAD-based sigma
+
+        Returns
+        -------
+        validated : dict with same keys as candidates; each entry gains
+                    on_trend  - bool
+                    predicted - colour predicted by the trend at this magnitude
+                    residual  - observed minus predicted
+        trend_fn  : callable  mag -> predicted_colour
+        """
+        keys  = [k for k, v in candidates.items() if v is not None]
+        mags  = np.array([candidates[k]["mag_mid"] for k in keys])
+        means = np.array([candidates[k]["mean"]    for k in keys])
+
+        mask = np.ones(len(mags), dtype=bool)
+
+        for _ in range(10):
+            if mask.sum() < deg + 2:
+                break
+            coeffs    = P.polyfit(mags[mask], means[mask], deg=deg)
+            predicted = P.polyval(mags, coeffs)
+            residuals = means - predicted
+            mad       = median_abs_deviation(residuals[mask])
+            mask      = np.abs(residuals) < sigma_clip * mad * 1.4826
+
+        coeffs    = P.polyfit(mags[mask], means[mask], deg=deg)
+        predicted = P.polyval(mags, coeffs)
+
+        validated = {}
+        for i, k in enumerate(keys):
+            c = candidates[k].copy()
+            c["on_trend"]  = bool(mask[i])
+            c["predicted"] = float(predicted[i])
+            c["residual"]  = float(means[i] - predicted[i])
+            validated[k]   = c
+
+        # Fill entries that were None in candidates
+        for k, v in candidates.items():
+            if k not in validated:
+                validated[k] = None
+
+        trend_fn = lambda m: float(P.polyval(np.asarray(m, dtype=float), coeffs))
+
+        return validated, trend_fn
+    
+
+    def recover_merged_slices(self, validated, results, trend_fn,
+                              max_residual=0.12, min_weight=0.02):
+        """
+        For slices where the RSG candidate deviates from the smooth colour trend
+        (likely because the GMM merged the blue/foreground population with RSGs,
+        pulling the component mean blueward), attempt to substitute the component
+        whose mean is closest to the trend prediction.
+
+        If no suitable component exists, fall back to the trend colour itself
+        (flagged as interpolated=True); those stars will receive low posterior
+        probabilities and will be down-weighted at the extraction step.
+
+        Parameters
+        ----------
+        validated     : output of fit_and_validate_chain
+        results       : output of slice_and_fit
+        trend_fn      : callable from fit_and_validate_chain
+        max_residual  : maximum allowed |mean - trend| for a recovery candidate
+        min_weight    : minimum component weight to consider
+
+        Returns
+        -------
+        validated : updated in place and returned
+        """
+        for key, cand in validated.items():
+            if cand is None or cand["on_trend"]:
+                continue
+
+            res            = results[key]
+            expected_color = trend_fn(res["mag_mid"])
+            means          = np.array(res["means"])
+            sigmas         = np.array(res["sigmas"])
+            weights        = np.array(res["weights"])
+
+            dists = np.abs(means - expected_color)
+            best  = int(np.argmin(dists))
+
+            if dists[best] <= max_residual and weights[best] >= min_weight:
+                validated[key] = {
+                    "mean":        float(means[best]),
+                    "sigma":       float(sigmas[best]),
+                    "weight":      float(weights[best]),
+                    "gmm_idx":     best,
+                    "is_reddest":  best == len(means) - 1,
+                    "mag_mid":     res["mag_mid"],
+                    "key":         key,
+                    "on_trend":    True,
+                    "predicted":   expected_color,
+                    "residual":    float(means[best] - expected_color),
+                    "recovered":   True,
+                }
+            else:
+                # No good component — mark as interpolated
+                validated[key]["interpolated"]  = True
+                validated[key]["mean"]          = expected_color
+                validated[key]["on_trend"]      = True   # treat as usable
+
+        return validated
+    
+    def extract_seeds(self, validated, results, mag, color, lcut, prob_threshold=(0.75, 0.75, 0.5)):
+        """
+        Assign stars to RSG, AGB, or blue-star populations in each magnitude slice
+        using GMM posterior probabilities.
+    
+        The RSG component is identified by the validated chain.  All components
+        redder than the RSG component (higher sorted index) are pooled as AGBs;
+        all components bluer (lower sorted index) are pooled as blue/foreground
+        stars.  Within each population a star is included when the summed
+        posterior probability across its assigned components meets prob_threshold.
+    
+        Parameters
+        ----------
+        validated       : output of recover_merged_slices
+        results         : output of slice_and_fit
+        mag, color      : original full arrays
+        prob_threshold  : minimum summed posterior probability to include a star
+                        in any population seed
+    
+        Returns
+        -------
+        rsg_indices  : (M,) int array   — indices of RSG seed stars
+        agb_indices  : (M,) int array   — indices of AGB seed stars
+        blue_indices : (M,) int array   — indices of blue/foreground seed stars
+        rsg_probs    : (M,) float array — RSG posterior probability per RSG star
+        agb_probs    : (M,) float array — summed AGB posterior per AGB star
+        blue_probs   : (M,) float array — summed blue posterior per blue star
+        """
+        rsg_indices,  rsg_probs  = [], []
+        agb_indices,  agb_probs  = [], []
+        blue_indices, blue_probs = [], []
+    
+        for key, cand in validated.items():
+            if cand is None:
+                continue
+    
+            m_lo, m_hi = key
+            slice_mask  = np.where((mag >= m_lo) & (mag < m_hi))[0]
+            c           = color[slice_mask]
+            m_          = mag[slice_mask]
+            rsg_mean, rsg_sig = cand["mean"], cand["sigma"]
+    
+            if len(c) == 0:
+                continue
+    
+            res   = results[key]
+            gmm   = res["gmm"]
+            n_comp = gmm.n_components
+    
+            # sorted order: index 0 = bluest component, index n-1 = reddest
+            order            = np.argsort(gmm.means_.flatten())
+            rsg_sorted_idx   = cand["gmm_idx"]          # position in sorted order
+            rsg_internal_idx = int(order[rsg_sorted_idx])
+    
+            # Sorted indices for AGB (redder) and blue (bluer) components
+            agb_sorted_idxs  = list(range(rsg_sorted_idx + 1, n_comp))
+            if rsg_sorted_idx == 0: 
+                blue_comp = 1
+            else:
+                blue_comp = rsg_sorted_idx
+            blue_sorted_idxs = list(range(0, blue_comp))
+    
+            # Map sorted indices - GMM internal indices
+            agb_internal_idxs  = [int(order[i]) for i in agb_sorted_idxs]
+            blue_internal_idxs = [int(order[i]) for i in blue_sorted_idxs]
+    
+            posteriors = gmm.predict_proba(c.reshape(-1, 1))  # shape (N_slice, n_comp)
+    
+            # RSG: single component
+            rsg_post = posteriors[:, rsg_internal_idx]
+            mask_rsg = rsg_post >= prob_threshold[1]
+            rsg_indices.extend(slice_mask[mask_rsg].tolist())
+            rsg_probs.extend(rsg_post[mask_rsg].tolist())
+    
+            # AGB: sum posteriors across all redder components
+            if agb_internal_idxs:
+                agb_post = posteriors[:, agb_internal_idxs].sum(axis=1)
+                mask_agb = agb_post >= prob_threshold[2]
+                luminous_mask = m_ > lcut
+                # Exclude stars already claimed by RSG to avoid double-counting
+                mask_agb &= ~mask_rsg
+                rsg_in_agb = np.copy(mask_agb)
+                mask_agb &= luminous_mask
+                rsg_in_agb &= ~luminous_mask
+                agb_indices.extend(slice_mask[mask_agb].tolist())
+                agb_probs.extend(agb_post[mask_agb].tolist())
+
+                rsg_indices.extend(slice_mask[rsg_in_agb].tolist())
+                rsg_probs.extend(agb_post[rsg_in_agb].tolist())
+    
+            # Blue: sum posteriors across all bluer components
+            if blue_internal_idxs:
+                blue_post = posteriors[:, blue_internal_idxs].sum(axis=1)
+                mask_blue = blue_post >= prob_threshold[0]
+                mask_blue &= ~mask_rsg
+                if agb_internal_idxs:
+                    mask_blue &= ~mask_agb
+                
+                #stars 2 sigma bluer than rsgs should be included in the blue sample even if they have low blue_post, since GMM can fail to separate them
+                blue_color_cut = rsg_mean - 3 * rsg_sig
+                missed_blue_mask = (c < blue_color_cut)
+                mask_blue |= missed_blue_mask
+                blue_indices.extend(slice_mask[mask_blue].tolist())
+                blue_probs.extend(blue_post[mask_blue].tolist())
+
+                # remove these stars from the RSG sample if they were included due to high AGB posterior
+                rsg_indices = [idx for idx in rsg_indices if idx not in slice_mask[missed_blue_mask]]
+                rsg_probs = [prob for idx, prob in zip(rsg_indices, rsg_probs) if idx not in slice_mask[missed_blue_mask]]
+            
+    
+        return (
+            np.array(rsg_indices,  dtype=int), np.array(agb_indices,  dtype=int),
+            np.array(blue_indices, dtype=int), np.array(rsg_probs),
+            np.array(agb_probs),               np.array(blue_probs),
+        )
+    
+    def plot_rsg_chain_on_cmd(self, validated, mag, color, rsg_indices=None, ax=None):
+        """
+        Overplot the chained RSG component means and sigmas on the CMD.
+        Optionally highlight the extracted seed stars.
+        """
+        if ax is None:
+            fig, ax = plt.subplots(figsize=(6, 8))
+        else:
+            fig = ax.figure
+
+        ax.scatter(color, mag, s=1, c="grey", alpha=0.3, rasterized=True,
+                label="All stars")
+
+        if rsg_indices is not None and len(rsg_indices):
+            ax.scatter(color[rsg_indices], mag[rsg_indices],
+                    s=4, c="tomato", alpha=0.6, rasterized=True,
+                    label="RSG seed")
+
+        for cand in validated.values():
+            if cand is None:
+                continue
+            color_flag = ("orange" if cand.get("recovered")
+                        else ("purple" if cand.get("interpolated") else "red"))
+            ax.errorbar(cand["mean"], cand["mag_mid"],
+                        xerr=cand.get("sigma", 0),
+                        fmt="o", color=color_flag,
+                        markersize=5, elinewidth=1.5, alpha=0.85)
+
+        ax.invert_yaxis()
+        ax.set_xlabel(f"{self.f1}-{self.f2}")
+        ax.set_ylabel(self.f2)
+        ax.set_title("Chained RSG seed")
+        if rsg_indices is not None:
+            ax.legend(markerscale=4, fontsize=8)
+        return fig, ax
+
+    def plot_chain_on_cmd(self, validated, mag, color,
+                        rsg_indices=None, agb_indices=None,
+                        blue_indices=None, ax=None):
+        """
+        Overplot the chained RSG component means on the CMD.
+        Optionally highlight RSG, AGB, and blue seed stars with distinct colours.
+        """
+        if ax is None:
+            fig, ax = plt.subplots(figsize=(6, 8))
+        else:
+            fig = ax.figure
+    
+        ax.scatter(color, mag, s=1, c="grey", alpha=0.3, rasterized=True,
+                label="All stars")
+    
+        if blue_indices is not None and len(blue_indices):
+            ax.scatter(color[blue_indices], mag[blue_indices],
+                    s=4, c="steelblue", alpha=0.6, rasterized=True,
+                    label="Blue seed")
+    
+        if rsg_indices is not None and len(rsg_indices):
+            ax.scatter(color[rsg_indices], mag[rsg_indices],
+                    s=4, c="tomato", alpha=0.6, rasterized=True,
+                    label="RSG seed")
+    
+        if agb_indices is not None and len(agb_indices):
+            ax.scatter(color[agb_indices], mag[agb_indices],
+                    s=4, c="firebrick", alpha=0.6, rasterized=True,
+                    label="AGB seed")
+    
+        # RSG chain component markers
+        for cand in validated.values():
+            if cand is None:
+                continue
+            chain_color = ("orange" if cand.get("recovered")
+                        else ("purple" if cand.get("interpolated") else "red"))
+            ax.errorbar(cand["mean"], cand["mag_mid"],
+                        xerr=cand.get("sigma", 0),
+                        fmt="o", color=chain_color,
+                        markersize=5, elinewidth=1.5, alpha=0.85, zorder=5)
+    
+        ax.invert_yaxis()
+        ax.set_xlabel(f"{self.f1} - {self.f2}")
+        ax.set_ylabel(self.f2)
+        ax.set_title("Seed populations")
+        ax.legend(markerscale=4, fontsize=8)
+        return fig, ax
+
+
+    def plot_component_tracking(self, results, validated=None, ax=None):
+        """
+        Show all GMM component means vs magnitude, with the validated RSG chain
+        highlighted in red.
+        """
+        if ax is None:
+            fig, ax = plt.subplots(figsize=(6, 8))
+        else:
+            fig = ax.figure
+
+        for key, res in results.items():
+            if res is None:
+                continue
+            m = res["mag_mid"]
+            for mean, sigma, w in zip(res["means"], res["sigmas"], res["weights"]):
+                ax.scatter(mean, m, s=200 * w, alpha=0.4,
+                        c="steelblue", edgecolors="k", linewidths=0.4)
+
+        if validated is not None:
+            for cand in validated.values():
+                if cand is None:
+                    continue
+                ax.scatter(cand["mean"], cand["mag_mid"],
+                        s=80, c="red", zorder=5, marker="*")
+
+        ax.invert_yaxis()
+        ax.set_xlabel(f"{self.f1}-{self.f2}")
+        ax.set_ylabel(self.f2)
+        ax.set_title("GMM components")
+        return fig, ax
+
+
+    def plot_bic_curves(self, results, n_cols=4):
+        """
+        Grid of BIC-vs-n curves, one panel per magnitude slice.
+        """
+        valid = [(k, v) for k, v in results.items() if v is not None]
+        n_panels = len(valid)
+        n_rows   = int(np.ceil(n_panels / n_cols))
+
+        fig, axes = plt.subplots(n_rows, n_cols,
+                                figsize=(3 * n_cols, 2.5 * n_rows),
+                                squeeze=False)
+        axes_flat = axes.flatten()
+
+        for ax in axes_flat:
+            ax.set_visible(False)
+
+        for i, (key, res) in enumerate(valid):
+            ax = axes_flat[i]
+            ax.set_visible(True)
+            ax.plot(res["n_range"], res["bics"], "o-", ms=4)
+            best_n = res["n_best"]
+            best_bic = res["bics"][res["n_range"].index(best_n)]
+            ax.axvline(best_n, color="red", lw=1, ls="--")
+            ax.set_title(f"m={res['mag_mid']:.2f}  n={best_n}", fontsize=8)
+            ax.set_xlabel("N", fontsize=7)
+            ax.set_ylabel("BIC", fontsize=7)
+            ax.tick_params(labelsize=6)
+
+        fig.tight_layout()
+        return fig
+    
+    def run_seed_selection(self,
+        n_max=7,
+        min_stars=30,
+        n_init=7,
+        min_weight=0.02,
+        trend_deg=2,
+        sigma_clip=2.0,
+        max_residual=0.12,
+        prob_threshold=(0.75, 0.75, 0.5),
+        plot=True,
+        return_trend = False
+    ):
+        """
+        End-to-end RSG seed selection pipeline.
+
+        Parameters
+        ----------
+        mag, color      : (N,) arrays — magnitude and colour of all sources
+        mag_bins        : bin edges for magnitude slicing
+        n_max           : maximum GMM components per slice
+        min_stars       : skip slices with fewer stars
+        n_init          : GMM random restarts
+        min_weight      : ignore components below this weight
+        trend_deg       : polynomial degree for colour-trend fit
+        sigma_clip      : sigma-clipping threshold for trend validation
+        max_residual    : max |colour - trend| allowed in recovery step
+        prob_threshold  : minimum RSG posterior probability to keep a star
+        plot            : if True, produce diagnostic figures
+        save_plots      : if True, save figures to disk
+        plot_prefix     : filename prefix when save_plots=True
+
+        Returns
+        -------
+        rsg_indices : (M,) int array   — indices of seed RSG stars
+        rsg_probs   : (M,) float array — RSG membership probability per star
+        validated   : per-slice chain dict (for inspection / debugging)
+        trend_fn    : callable mag → predicted RSG colour
+        results     : raw per-slice GMM results
+        """
+        self.logger.info("Step 1/4  Fitting GMMs per magnitude slice ...")
+        results = self.slice_and_fit(self.mags, self.colors, self.mag_bins,
+                                n_max=n_max, min_stars=min_stars, n_init=n_init)
+        n_fitted = sum(1 for v in results.values() if v is not None)
+        self.logger.info(f"          {n_fitted} slices fitted (of {len(results)} total)")
+
+        self.logger.info("Step 2/4  Identifying RSG candidate per slice ...")
+        candidates = self.initialize_rsg_chain(results, min_weight=min_weight, exp_rsg_color=self.rsg_color)
+
+        self.logger.info("Step 3/4  Fitting color trend and sigma-clipping outlier slices …")
+        validated, trend_fn = self.fit_and_validate_chain(candidates, deg=trend_deg, sigma_clip=sigma_clip)
+        n_on    = sum(1 for v in validated.values()
+                    if v is not None and v.get("on_trend"))
+        n_off   = sum(1 for v in validated.values()
+                    if v is not None and not v.get("on_trend"))
+        self.logger.info(f"          {n_on} on-trend  |  {n_off} off-trend (attempting recovery)")
+
+        validated = self.recover_merged_slices(
+            validated, results, trend_fn,
+            max_residual=max_residual, min_weight=min_weight)
+        n_rec   = sum(1 for v in validated.values() if v and v.get("recovered"))
+        n_interp = sum(1 for v in validated.values() if v and v.get("interpolated"))
+        self.logger.info(f"          {n_rec} recovered  |  {n_interp} interpolated from trend")
+
+        self.logger.info("Step 4/4  Extracting RSG seed stars via GMM posteriors …")
+        rsg_indices, agb_indices, blue_indices, rsg_probs, agb_probs, blue_probs = \
+            self.extract_seeds(validated, results, self.mags, self.colors, self.lcut, prob_threshold=prob_threshold)
+        self.logger.info(f"          RSGs : {len(rsg_indices)}  |  "
+            f"AGBs : {len(agb_indices)}  |  "
+            f"Blue : {len(blue_indices)}  "
+            f"(p ≥ {prob_threshold})")
+
+        rsg_seed = self.df[self.cmd_mask].iloc[rsg_indices]
+        agb_seed = self.df[self.cmd_mask].iloc[agb_indices]
+        blue_seed = self.df[self.cmd_mask].iloc[blue_indices]
+        temperature_mask = (rsg_seed['temperature_median'] < 4500) & (rsg_seed['temperature_median'] > 3200)
+        luminosity_mask = (rsg_seed['luminosity_median'] < 4.5) & (rsg_seed['tau_V_median'] > 0.5)
+
+        agb_seed = pd.concat([agb_seed, rsg_seed[luminosity_mask]])
+        rsg_seed = rsg_seed[temperature_mask & ~luminosity_mask]
+        rsg_seed['class'] = 'RSG'
+        agb_seed['class'] = 'AGB'
+        blue_seed['class'] = 'Blue'
+        seed_df = pd.concat([rsg_seed, agb_seed, blue_seed])
+
+        if plot:
+            fig1, _ = self.plot_chain_on_cmd(validated, self.mags, self.colors,
+                                rsg_indices, agb_indices, blue_indices)
+            fig2, _ = self.plot_component_tracking(results, validated)
+            # fig3    = self.plot_bic_curves(results)
+
+
+            plt.show()
+
+
+        return seed_df, validated, trend_fn, results
+
+
     
 def run_sc(gal):
     try:
