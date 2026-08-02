@@ -29,6 +29,7 @@ def create_parser():
     parser.add_argument('--comp', type=str, default='sil', help='Dust composition (sil or grf)')
     parser.add_argument('--outdir', type=str, default='data/dusty_sil_grid', help='Output directory for spectra')
     parser.add_argument('--modeldir', type=str, default='data/marcs/m1.00_g0.00', help='Model directory for DUSTY input spectra')
+    parser.add_argument('--rewrite_lambda_grid', default=False, action=argparse.BooleanOptionalAction, help='Rewrite the wavelength grid in DUSTY and recompile')
     return parser
  
 class dustgen(object):
@@ -254,9 +255,8 @@ class dusty_gen(object):
         self.dusty_basedir = os.environ['DUSTY_PATH'] #full path
         self.dusty_datadir = outdir # full path
         self.dusty_lambda_grid = list(np.logspace(np.log10(0.01), np.log10(0.6), num = 100)) +\
-                                 list(np.logspace(np.log10(0.6), np.log10(4.5), num = 1000)) +\
-                                 list(np.logspace(np.log10(4.5), np.log10(15), num = 200)) +\
-                                 list(np.logspace(np.log10(15), np.log10(3.6e4), num = 200))
+                                 list(np.logspace(np.log10(0.6), np.log10(30), num = 1000)) +\
+                                 list(np.logspace(np.log10(30), np.log10(3.6e4), num = 200))
         self.dusty_lambda_grid = np.array(self.dusty_lambda_grid)
         self.dusty_n_taugrid = 27
         self.validate_dusty_dir(rewrite_lambda_grid)
@@ -306,7 +306,8 @@ class dusty_gen(object):
             # recompile dusty
             subprocess.run(['gfortran', 'dustyV2.f', '-std=legacy', '-o', 'dusty'])
 
-        default_tau = np.array(list(np.arange(0.0, 1.1, 0.1)) + list(np.arange(1.5, 6.0, 0.5)) + list(np.arange(6.0, 13.0, 1.0)))
+        default_tau = np.array(list(np.arange(0.0, 1.1, 0.1)) + list(np.arange(1.5, 6.0, 0.5)) + list(np.arange(6.0, 13.0, 1.0)) +\
+                        list(np.arange(15.0, 33.0, 2.0)) + list(np.arange(35.0, 61.0, 5.0))) 
         taufile = os.path.join(self.dusty_basedir, 'taugrid.dat')
         exist_tau = np.loadtxt(taufile, skiprows=1, dtype=float)
         if len(exist_tau) != len(default_tau):
@@ -539,8 +540,9 @@ if __name__ == '__main__':
     comp = args.comp
     outdir = args.outdir
     modeldir = args.modeldir
+    rewrite_lambda_grid = args.rewrite_lambda_grid
 
-    dustgen = dusty_gen(dist = 10*u.Mpc, logz=logz, outdir=outdir, modeldir=modeldir)
+    dustgen = dusty_gen(dist = 10*u.Mpc, logz=logz, outdir=outdir, modeldir=modeldir, rewrite_lambda_grid=rewrite_lambda_grid)
     dustgen.dust_comp = comp
 
     dustgen.gen_grid(redo_dusty=False, redo_input=False, tb_overwrite=True)
