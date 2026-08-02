@@ -1,57 +1,27 @@
-import scienceplots
 import numpy as np
-import os, glob
-import emcee
-import progressbar
+import os
 import sys
 import astropy.units as u
-import astropy.constants as const
 import traceback
-import pickle
-from astropy.io import fits, ascii
-from astropy.stats import sigma_clipped_stats as scs
-from scipy import interpolate
-from scipy.integrate import simpson
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 from plotly import express as px
-from astropy.io.misc.hdf5 import read_table_hdf5
-import pandas as pd
-import itertools
-from tqdm import tqdm
-import corner
-import time
-from scipy.stats import gaussian_kde, norm, skewnorm
-from scipy.optimize import curve_fit
-from scipy.interpolate import CubicSpline
+from scipy.stats import gaussian_kde
+from scipy.interpolate import interp1d
 import torch
-from sbi import utils as sbi_utils
-from sbi.neural_nets import posterior_nn
-from sbi import inference
-from torch.distributions import MultivariateNormal, Exponential, LogNormal
-from sbi.utils import MultipleIndependent, BoxUniform
-from sklearn.metrics import r2_score
-from sklearn.metrics import root_mean_squared_error as rmse
 from sklearn.preprocessing import StandardScaler
-from sklearn.model_selection import GridSearchCV
-from sklearn.neighbors import KernelDensity
-from sklearn.decomposition import PCA
 from sklearn.mixture import GaussianMixture
 from numpy.polynomial import polynomial as P
 from scipy.stats import median_abs_deviation
-from plotly import express as px
-import signal
-import copy
 from pathlib import Path
 import json
-from multiprocessing import Pool, Process
+from multiprocessing import Pool
 from contextlib import contextmanager
+import pandas as pd
+from tqdm import tqdm
 
-import rsg_phot.dust as dust
-from rsg_phot.mcmc import mcmc
 from rsg_phot.mc_parallel import rsg_dataloader, mcmcfit
 from rsg_phot.rsg_sbi import sbifit
-from rsg_phot import sbi_pp
 
 @contextmanager
 def suppress_stdout():
@@ -66,11 +36,6 @@ def suppress_stdout():
             sys.stdout = old_stdout
             sys.stderr = old_stderr
 
-with suppress_stdout():
-    from synphot import SpectralElement
-    from synphot.models import Empirical1D
-    import optuna
-
 ALL_CONFIGS = {
     'ngc5236': {'rsgcat': Path('../data/dolphot/ngc5236/ngc5236_sil_rsgcat.csv'),
                 'load_args': {'gal':'ngc5236',
@@ -82,7 +47,8 @@ ALL_CONFIGS = {
                 'f1': 'F115W', 'f2': 'F200W',
                 'sbicat_path': Path('../data/dolphot/ngc5236/ngc5236_sbi_cat.csv'),
                 'rsg_color': 0.4, 'dm': 0.4,
-                'z_true': 0.74, 'z_err': 0.01},
+                'z_true': 0.74, 'z_err': 0.01, 
+                'sfr': 6.193, 'sfr_err': 1.840},
     'ngc5194': {'rsgcat': Path('../data/dolphot/ngc5194/ngc5194_sil_rsgcat.csv'),
                 'load_args': {'gal':'ngc5194',
                               'procdir':Path('../data/dolphot/ngc5194'), 'photfile_path':None,
@@ -93,7 +59,8 @@ ALL_CONFIGS = {
                 'f1': 'F115W', 'f2': 'F200W',
                 'sbicat_path': Path('../data/dolphot/ngc5194/ngc5194_sbi_cat.csv'),
                 'rsg_color': 0.4, 'dm': 0.5,
-                'z_true': 0.93, 'z_err': 0.21},
+                'z_true': 0.93, 'z_err': 0.21,
+                'sfr': 3.85, 'sfr_err': 0.45},
     'ngc4258': {'rsgcat': Path('../data/dolphot/ngc4258/ngc4258_sil_rsgcat.csv'),
                 'load_args': {'gal':'ngc4258',
                               'procdir':Path('../data/dolphot/ngc4258'), 'photfile_path':None,
@@ -104,7 +71,8 @@ ALL_CONFIGS = {
                 'f1': 'F115W', 'f2': 'F210M',
                 'sbicat_path': Path('../data/dolphot/ngc4258/ngc4258_sbi_cat.csv'),
                 'rsg_color': 0.2, 'dm': 0.5,
-                'z_true': 0.63, 'z_err': 0.13},
+                'z_true': 0.63, 'z_err': 0.13,
+                'sfr': 3.0, 'sfr_err': 1.0},
     'ngc628': {'rsgcat': Path('../data/dolphot/ngc628/ngc628_sil_rsgcat.csv'),
                'load_args': {'gal':'ngc628',
                              'procdir':Path('../data/dolphot/ngc628'), 'photfile_path':None,
@@ -115,7 +83,8 @@ ALL_CONFIGS = {
                'f1': 'F115W', 'f2': 'F200W',
                'sbicat_path': Path('../data/dolphot/ngc628/ngc628_sbi_cat.csv'),
                'rsg_color': 0.4, 'dm': 0.5,
-               'z_true': 0.62, 'z_err': 0.01},
+               'z_true': 0.62, 'z_err': 0.01,
+               'sfr': 2.290, 'sfr_err': 0.637}, 
     'ngc5643': {'rsgcat': Path('../data/dolphot/ngc5643/ngc5643_sil_rsgcat.csv'),
                 'load_args': {'gal':'ngc5643',
                               'procdir':Path('../data/dolphot/ngc5643'), 'photfile_path':None,
@@ -126,7 +95,8 @@ ALL_CONFIGS = {
                 'f1': 'F115W', 'f2': 'F200W',
                 'sbicat_path': Path('../data/dolphot/ngc5643/ngc5643_sbi_cat.csv'),
                 'rsg_color': 0.4, 'dm': 0.5,
-                'z_true': 0.62, 'z_err': 0.01},
+                'z_true': 0.62, 'z_err': 0.01,
+                'sfr': 2.57, 'sfr_err': 1.0}, 
     'ngc7320': {'rsgcat': Path('../data/dolphot/ngc7320/ngc7320_sil_rsgcat.csv'),
                 'load_args': {'gal':'ngc7320',
                               'procdir':Path('../data/dolphot/ngc7320'), 'photfile_path':None,
@@ -137,7 +107,8 @@ ALL_CONFIGS = {
                 'f1': 'F090W', 'f2': 'F200W',
                 'sbicat_path': Path('../data/dolphot/ngc7320/ngc7320_sbi_cat.csv'),
                 'rsg_color': 0.9, 'dm': 0.5,
-                'z_true': 0.49, 'z_err': 0.11},
+                'z_true': 0.49, 'z_err': 0.11,
+                'sfr': 1.0, 'sfr_err': 1.0},
     'ngc1367': {'rsgcat': Path('../data/dolphot/ngc1367/ngc1367_sil_rsgcat.csv'),
                 'load_args': {'gal':'ngc1367',
                               'procdir':Path('../data/dolphot/ngc1367'), 'photfile_path':None,
@@ -148,7 +119,8 @@ ALL_CONFIGS = {
                 'f1': 'F150W', 'f2': 'F200W',
                 'sbicat_path': Path('../data/dolphot/ngc1367/ngc1367_sbi_cat.csv'),
                 'rsg_color': -0.06, 'dm': 0.5,
-                'z_true': 1.29, 'z_err': 0.7}, # minweight 0.1
+                'z_true': 0.78, 'z_err': 0.15,
+                'sfr': 1.0, 'sfr_err': 1.0}, # minweight 0.1
     'ngc1365': {'rsgcat': Path('../data/dolphot/ngc1365/ngc1365_sil_rsgcat.csv'),
                 'load_args': {'gal':'ngc1365',
                               'procdir':Path('../data/dolphot/ngc1365'), 'photfile_path':None,
@@ -159,7 +131,8 @@ ALL_CONFIGS = {
                 'f1': 'F115W', 'f2': 'F200W',
                 'sbicat_path': Path('../data/dolphot/ngc1365/ngc1365_sbi_cat.csv'),
                 'rsg_color': 0.4, 'dm': 0.5,
-                'z_true': 0.73, 'z_err': 0.02},
+                'z_true': 0.73, 'z_err': 0.02,
+                'sfr': 11.215, 'sfr_err': 5.549},
     'ngc4536': {'rsgcat': Path('../data/dolphot/ngc4536/ngc4536_sil_rsgcat.csv'),
                 'load_args': {'gal':'ngc4536',
                               'procdir':Path('../data/dolphot/ngc4536'), 'photfile_path':None,
@@ -170,7 +143,9 @@ ALL_CONFIGS = {
                 'f1': 'F150W', 'f2': 'F200W',
                 'sbicat_path': Path('../data/dolphot/ngc4536/ngc4536_sbi_cat.csv'),
                 'rsg_color': 0.0, 'dm': 0.5,
-                'z_true': 0.62, 'z_err': 0.13},
+                'z_true': 0.62, 'z_err': 0.13,
+                # 'sfr': 3.126, 'sfr_err': 0.814},
+                'sfr': 8.1, 'sfr_err': 1.0},
     'ngc5457': {'rsgcat': Path('../data/dolphot/ngc5457/ngc5457_sil_rsgcat.csv'),
                 'load_args': {'gal':'ngc5457',
                               'procdir':Path('../data/dolphot/ngc5457'), 'photfile_path':None,
@@ -181,7 +156,8 @@ ALL_CONFIGS = {
                 'f1': 'F115W', 'f2': 'F200W',
                 'sbicat_path': Path('../data/dolphot/ngc5457/ngc5457_sbi_cat.csv'),
                 'rsg_color': 0.4, 'dm': 0.5,
-                'z_true': 0.55, 'z_err': 0.01},
+                'z_true': 0.55, 'z_err': 0.01,
+                'sfr': 4.727, 'sfr_err': 0.897},
     'ngc4449': {'rsgcat': os.path.join(os.pardir, 'data/dolphot/ngc4449/ngc4449_sil_rsgcat.csv'),
                 'load_args': {'gal':'ngc4449', 'procdir':os.path.join(os.pardir, 'data/dolphot/ngc4449'), 'photfile_path':None,
                               'dm':28.02, 'dmerr':0.32, 'z':-0.5, 'trgb':('F090W', 25.11),
@@ -190,7 +166,8 @@ ALL_CONFIGS = {
                 'sbicat_path': Path('../data/dolphot/ngc4449/ngc4449_sbi_cat.csv'),
                 'model': "2ed03571",
                 'rsg_color': 0.3, 'dm': 0.3,
-                'z_true': 0.34, 'z_err': 0.03}, # single seed selection iteration (skip trend removal) 
+                'z_true': 0.34, 'z_err': 0.03,
+                'sfr': 0.766, 'sfr_err': 0.073}, # single seed selection iteration (skip trend removal) 
     'ngc4485': {'rsgcat': os.path.join(os.pardir, 'data/dolphot/ngc4485/ngc4485_sil_rsgcat.csv'),
                 'load_args': {'gal':'ngc4485', 'procdir':os.path.join(os.pardir, 'data/dolphot/ngc4485'), 'photfile_path':None,
                               'dm':29.67, 'dmerr':0.1, 'z':-0.5, 'trgb':('F090W', 25.62),
@@ -199,7 +176,8 @@ ALL_CONFIGS = {
                 'sbicat_path': Path('../data/dolphot/ngc4485/ngc4485_sbi_cat.csv'),
                 'model': "41d94035",
                 'rsg_color': 0.3, 'dm': 0.5,
-                'z_true': 0.25, 'z_err': 0.03}, 
+                'z_true': 0.25, 'z_err': 0.03,
+                'sfr': 4.7, 'sfr_err': 1.0}, 
     'ngc4548': {'rsgcat': os.path.join(os.pardir, 'data/dolphot/ngc4548/ngc4548_sil_rsgcat.csv'),
                 'load_args': {'gal':'ngc4548', 'procdir':os.path.join(os.pardir, 'data/dolphot/ngc4548'), 'photfile_path':None,
                               'dm':30.08, 'dmerr':0.05, 'z':0.0, 'trgb':('F090W', 27.00),
@@ -207,25 +185,29 @@ ALL_CONFIGS = {
                 'model': "175bb2bb",
                 'f1': 'F150W', 'f2': 'F200W',
                 'sbicat_path': Path('../data/dolphot/ngc4548/ngc4548_sbi_cat.csv'),
-                'rsg_color': 0.0, 'dm': 0.5}, 
+                'rsg_color': 0.0, 'dm': 0.5,
+                'z_true': 4.47, 'z_err': 0.5,
+                'sfr': 0.52, 'sfr_err': 0.15}, 
     'ngc4038': {'rsgcat': os.path.join(os.pardir, 'data/dolphot/ngc4038/ngc4038_sil_rsgcat.csv'),
                 'load_args': {'gal':'ngc4038', 'procdir':os.path.join(os.pardir, 'data/dolphot/ngc4038'), 'photfile_path':None,
                               'dm':31.053, 'dmerr':0.05, 'z':0.0, 'trgb':('F090W', 27.72),
                               'modeltype':'MARCS', 'comp':'sil', 'keep_narrow':False,},
                 'model': "2fa77c2e",
-                'f1': 'F150W', 'f2': 'F356W',
+                'f1': 'F115W', 'f2': 'F150W',
                 'sbicat_path': Path('../data/dolphot/ngc4038/ngc4038_sbi_cat.csv'),
                 'rsg_color': 0.0, 'dm': 0.5,
-                'z_true': 1.02, 'z_err': 0.05}, 
+                'z_true': 1.02, 'z_err': 0.05,
+                'sfr': 8.954, 'sfr_err': 0.788}, 
     'ngc3034': {'rsgcat': os.path.join(os.pardir, 'data/dolphot/ngc3034/ngc3034_sil_rsgcat.csv'),
                 'load_args': {'gal':'ngc3034', 'procdir':os.path.join(os.pardir, 'data/dolphot/ngc3034'), 'photfile_path':None,
                               'dm':27.95, 'dmerr':0.21, 'z':0.0, 'trgb':('F090W', 23.95),
                               'modeltype':'MARCS', 'comp':'sil', 'keep_narrow':False,},
-                # 'model': "2fa77c2e",
+                'model': "7fb4df30",
                 'f1': 'F115W', 'f2': 'F200W',
                 'sbicat_path': Path('../data/dolphot/ngc3034/ngc3034_sbi_cat.csv'),
                 'rsg_color': 0.35, 'dm': 0.5,
-                'z_true': 1.00, 'z_err': 0.2}, 
+                'z_true': 1.00, 'z_err': 0.2,
+                'sfr': 10.0, 'sfr_err': 2.0}, 
 }
 
 def load_gal(gal:str):
@@ -306,7 +288,7 @@ class AdaptiveKDE:
         likelihoods = np.zeros((n_samples, n_classes))
         for class_idx, kde in self.kdes.items():
             likelihoods[:, class_idx] = kde(X_scaled.T)
-            # likelihoods[:, class_idx] /= np.max(likelihoods[:, class_idx])
+            likelihoods[:, class_idx] /= np.max(likelihoods[:, class_idx])
         
         # Normalize
         probs = likelihoods / likelihoods.sum(axis=1, keepdims=True)
@@ -369,13 +351,13 @@ class star_class(object):
         rsg_m = self.df[self.cmd_mask][f'{self.f2}_mag']
 
         fig, ax = plt.subplots()
-        ax.hexbin(rsg_cl, rsg_m, cmap = 'viridis', bins=200, norm=mpl.colors.LogNorm());
+        ax.hexbin(rsg_cl, rsg_m, cmap = 'inferno', bins=200, norm=mpl.colors.LogNorm())
         ax.invert_yaxis()
         ax.grid(ls='--', alpha=0.3)
 
         ax.set_xlabel(f'{self.f1}-{self.f2}')
         ax.set_ylabel(self.f2)
-        ax.set_title(f'{self.gal.upper()}');  
+        ax.set_title(f'{self.gal.upper()}')
 
     def plot_lum_cmd(self):
         rsg_cl = self.df[self.cmd_mask][f'{self.f1}_mag'] - self.df[self.cmd_mask][f'{self.f2}_mag']
@@ -397,7 +379,7 @@ class star_class(object):
 
         plt.xlabel(f'{self.f1}-{self.f2}')
         plt.ylabel(self.f2)
-        plt.title(f'{self.gal.upper()} CMD');
+        plt.title(f'{self.gal.upper()} CMD')
     
     def select_seed_sample(self, rsg_color, dm=0.5, prob_threshold = (0.75, 0.75, 0.5), minweight=0.02, magbins=None, plot=False):
         seed_gen = rsg_seed(self.gal, self.sbicat_path, self.f1, self.f2, rsg_color, dm=dm)
@@ -415,7 +397,7 @@ class star_class(object):
     def plot_seed_cmd(self, seed_df):
         self.plot_cmd()
         plt.scatter(seed_df[f'{self.f1}_mag'] - seed_df[f'{self.f2}_mag'], seed_df[f'{self.f2}_mag'], 
-                    c=seed_df['class'].map({'RSG': 'coral', 'AGB': 'none', 'Blue': 'cyan'}), s=2);
+                    c=seed_df['class'].map({'RSG': 'coral', 'AGB': 'none', 'Blue': 'cyan'}), s=2)
         plt.show()
 
     def plot_seed_3d(self, seed_df):
@@ -480,6 +462,7 @@ class star_class(object):
                         color=color, s=1, label=class_label)
 
     def plot_rsg_cmd(self, pcut=0.7):
+        self.logger.info(f"{(self.df['p_rsg'] > pcut).sum()} RSGs above pcut {pcut}")
         self.plot_cmd()
         rsg_subset = self.df[self.cmd_mask & (self.df['p_rsg'] > pcut)]
         plt.scatter(rsg_subset[f'{self.f1}_mag'] - rsg_subset[f'{self.f2}_mag'], rsg_subset[f'{self.f2}_mag'], 
@@ -517,8 +500,25 @@ class star_class(object):
         
 
 class rsg_seed(star_class):
-    def __init__(self, gal:str, sbicat_path:Path, f1:str, f2:str, rsg_color:float, dm=0.5):
+    def __init__(self, gal:str, sbicat_path:Path, f1:str, f2:str, rsg_color:float, dm=0.5, deredden=False):
         super().__init__(gal, sbicat_path, f1, f2)
+
+        if deredden:
+            e_bv = self.df['Av_median'] / 3.1
+            d_ebv = self.df['Av_eup'] / 3.1
+
+            from dust_extinction.parameter_averages import CCM89, G23
+            ext = G23(Rv=3.1)
+            for flt_ in ['F115W', 'F200W']:
+                wv = float(flt_[1:4])/100*u.um
+                a_lambda = ext(wv)
+                A_lambda = a_lambda * e_bv * 3.1
+                dA_lambda = a_lambda * d_ebv * 3.1
+                self.df[flt_ + '_mag_dered'] = self.df[flt_ + '_mag'] - A_lambda
+                self.df[flt_ + '_mag_dered_err'] = np.sqrt(self.df[flt_ + '_err']**2 + dA_lambda**2)
+        # self.df['F115W_mag'] = self.df['F115W_mag_dered']
+        # self.df['F200W_mag'] = self.df['F200W_mag_dered']
+
         self.rsg_color = rsg_color
         self.lcut = self.get_lcut()
         self.logger.info(f"Initial RSG color cut: {self.rsg_color:.2f}, luminosity cut: {self.lcut:.2f}")
@@ -537,7 +537,7 @@ class rsg_seed(star_class):
         f200w_mean, f200w_sig = np.mean(rsg_m[lmask]), np.std(rsg_m[lmask], ddof=1)
         return f200w_mean + f200w_sig
     
-    def fit_gmm_bic(self, colors, n_min=3, n_max=7, n_init=5, random_state=42):
+    def fit_gmm_bic(self, colors, n_min=3, n_max=10, n_init=5, random_state=42):
         """
         Fit GMMs with n_min..n_max components to a 1-D colour array.
         Returns the model with the lowest BIC, together with the BIC curve.
@@ -1169,7 +1169,6 @@ class validate_selection():
             gdf = pd.read_csv(f'../data/dolphot/{gal}/{gal}_kdecat.csv')
         # subset = cdf[(cdf['galaxy'].isin(Z_MAPPING[met])) & (cdf['p_rsg'] > pcut)]
         subset = gdf[gdf['p_rsg'] > pcut]
-        adap_kde = AdaptiveKDE(alpha=-0.5)
         X = subset[['temperature_median', 'luminosity_median', 'tau_V_median']].values
         if samp_err:
             sig = (subset[['temperature_elow', 'luminosity_elow', 'tau_V_elow']].values + \
@@ -1177,12 +1176,48 @@ class validate_selection():
             X = np.random.normal(loc=X, scale=sig, size=(50, X.shape[0], X.shape[1])).reshape(-1, X.shape[1])
             resamp_idx = np.random.choice(range(X.shape[0]), size=10000, replace=False)
             X = X[resamp_idx]
-        y = np.array([0] * X.shape[0])
-        adap_kde = adap_kde.fit(X, y, class_names=['RSG'])
-        resamp = adap_kde.scaler.inverse_transform(adap_kde.kdes[0].resample(nsamp).T)
+
+        bics, models = [], []
+        n_range = list(range(1, 10 + 1))
+
+        for n in n_range:
+            gmm = GaussianMixture(
+                n_components=n,
+                covariance_type="full",
+                n_init=3,
+                random_state=42,
+            )
+            gmm.fit(X)
+            bics.append(gmm.bic(X))
+            models.append(gmm)
+
+        best_idx = int(np.argmin(bics))
+        best_gmm = models[best_idx]
+        resamp, _ = best_gmm.sample(nsamp)
+
+        # simulate low luminosity RSGs that may be missing from the sample due to selection effects
+        min_L = subset['luminosity_median'].min()
+        l_global = cdf[cdf['p_rsg'] > 0.7]['luminosity_median'].values
+        global_lowl = cdf[(cdf['p_rsg'] > 0.7) & (cdf['luminosity_median'] < min_L)]['luminosity_median'].values
+        pdf, bin_ = np.histogram(global_lowl, bins=30, density=True)
+        c_df = np.cumsum(pdf * np.diff(bin_))
+        global_interp = interp1d(c_df, (bin_[1:] + bin_[:-1])/2, bounds_error=False, fill_value=(0, 1))
+        n_missing = int((l_global < min_L).sum() / len(l_global) * nsamp)
+        n_missing = max(n_missing, 5)
+        u = np.random.uniform(0, 1, size=n_missing)
+        lowl_resamp = global_interp(u)
+        lowl_resamp[lowl_resamp < min(l_global)] = min(l_global)
+        t_resamp = gaussian_kde(subset[subset['luminosity_median'] < min_L + 0.3]['temperature_median'].values).resample(int(n_missing)).flatten()
+        tau_resamp = gaussian_kde(subset[subset['luminosity_median'] < min_L + 0.3]['tau_V_median'].values).resample(int(n_missing)).flatten()
+        lowl_samp = np.vstack((t_resamp, lowl_resamp, tau_resamp)).T
+        self.logger.info(f'Lowest simulated RSG luminosity: {min(lowl_resamp):.2f}')
+
+        resamp = np.vstack((resamp, lowl_samp))
+        nsamp += int(n_missing)
+
         resamp[:, 0] = np.clip(resamp[:, 0], 2600, 5000)
-        resamp[:, 1] = np.clip(resamp[:, 1], 3.0, 6.0)
-        resamp[:, 2] = np.clip(resamp[:, 2], 1e-4, 12.0)
+        resamp[:, 1] = np.clip(resamp[:, 1], 3.45, 5.99)
+        resamp[:, 2] = np.clip(resamp[:, 2], 1e-3, 8.0)
 
         tdust_kde = gaussian_kde(subset['dust_temp_median'].values)
         av_kde = gaussian_kde(subset['Av_median'].values)
@@ -1196,18 +1231,16 @@ class validate_selection():
                                                  'tau_V_median', 'dust_temp_median', 'Av_median', 'Rv_median'])
         truth_df = truth_df[['temperature_median', 'dust_temp_median', 'tau_V_median', 
                              'luminosity_median', 'Rv_median', 'Av_median']]
-        return truth_df
+        return truth_df, nsamp
 
     def generate_agb_blue_truth_sample(self, gal, met, samp_err=False,
                                         pcut=0.7, nsamp=20000, gdf=None):
         self.logger.info(f"Generating AGB/Blue truth sample for {gal} at Z={met} with pcut={pcut} and samp_err={samp_err}")
-        cdf = pd.read_csv('../notebooks/hack/combined_cat.csv')
         if gdf is None:
             gdf = pd.read_csv(f'../data/dolphot/{gal}/{gal}_kdecat.csv')
         # subset = cdf[(cdf['galaxy'].isin(Z_MAPPING[met])) & ((cdf['p_agb'] > pcut) | 
         # (cdf['p_blue'] > pcut))].sample(100000, random_state=42)
         subset = gdf[(gdf['p_agb'] > pcut) | (gdf['p_blue'] > pcut)]
-        adap_kde = AdaptiveKDE(alpha=-0.5)
         X = subset[['temperature_median', 'luminosity_median', 'tau_V_median']].values
         if samp_err:
             sig = (subset[['temperature_elow', 'luminosity_elow', 'tau_V_elow']].values + \
@@ -1215,12 +1248,27 @@ class validate_selection():
             X = np.random.normal(loc=X, scale=sig, size=(50, X.shape[0], X.shape[1])).reshape(-1, X.shape[1])
             resamp_idx = np.random.choice(range(X.shape[0]), size=10000, replace=False)
             X = X[resamp_idx]
-        y = np.array([0] * X.shape[0])
-        adap_kde = adap_kde.fit(X, y, class_names=['AGB'])
-        resamp = adap_kde.scaler.inverse_transform(adap_kde.kdes[0].resample(nsamp).T)
-        resamp[:, 0] = np.clip(resamp[:, 0], 2601, 4990)
-        resamp[:, 1] = np.clip(resamp[:, 1], 3.01, 5.99)
-        resamp[:, 2] = np.clip(resamp[:, 2], 1e-3, 10.0)
+
+        bics, models = [], []
+        n_range = list(range(1, 10 + 1))
+
+        for n in n_range:
+            gmm = GaussianMixture(
+                n_components=n,
+                covariance_type="full",
+                n_init=3,
+                random_state=42,
+            )
+            gmm.fit(X)
+            bics.append(gmm.bic(X))
+            models.append(gmm)
+
+        best_idx = int(np.argmin(bics))
+        best_gmm = models[best_idx]
+        resamp, _ = best_gmm.sample(nsamp)
+        resamp[:, 0] = np.clip(resamp[:, 0], 2600, 5000)
+        resamp[:, 1] = np.clip(resamp[:, 1], 3.0, 6.0)
+        resamp[:, 2] = np.clip(resamp[:, 2], 1e-3, 8.0)
 
         tdust_kde = gaussian_kde(subset['dust_temp_median'].values)
         av_kde = gaussian_kde(subset['Av_median'].values)
@@ -1249,7 +1297,7 @@ class validate_selection():
         plt.title(f'{gal.upper()} - KDE RSG Probability')
         plt.show()
 
-    def plot_purity_completeness_curve(self, rsg_pvals, agb_pvals, gal):
+    def plot_purity_completeness_curve(self, rsg_pvals, agb_pvals):
         completeness = []
         for pc_ in np.linspace(0.00, 0.99, 100):
             completeness.append(np.sum(rsg_pvals[:, 0] > pc_) / len(rsg_pvals) * 100)
@@ -1268,11 +1316,13 @@ class validate_selection():
         ax2.plot(np.linspace(0.00, 0.99, 100), purity, color='orange')
         ax2.set_ylabel('Purity (%)', color='orange')
         ax2.tick_params(axis='y', labelcolor='orange')
-        plt.axvline(0.8, color='sandybrown', linestyle='--', label='Bronze Threshold') 
-        plt.axvline(0.9, color='silver', linestyle='--', label='Silver Threshold')
-        plt.axvline(0.95, color='gold', linestyle='--', label='Gold Threshold')
-        plt.legend(loc='lower center');
+        plt.axvline(0.7, color='sandybrown', linestyle='--', label='Bronze Threshold') 
+        plt.axvline(0.8, color='silver', linestyle='--', label='Silver Threshold')
+        plt.axvline(0.9, color='gold', linestyle='--', label='Gold Threshold')
+        plt.legend(loc='lower center')
         plt.show()
+
+        return purity, completeness
 
     def plot_sim_on_cmd(self, sim_rsg_truth, rsg_pvals, gal):
         idx1 = np.where(self.cl.rsgloader.cols['flts'][self.cl.rsgloader.flt_mask] == self.cl.f1.upper())[0][0]
@@ -1286,7 +1336,7 @@ class validate_selection():
         plt.title(f'{gal.upper()} - KDE RSG Probability')
         plt.show()
     
-    def plot_sbi_hrd(self, rsg_inf_sample, rsg_truth_sample, rsg_pvals, gal):
+    def plot_sbi_hrd(self, rsg_inf_sample, rsg_truth_sample, rsg_pvals):
         plt.figure()
         plt.scatter(rsg_inf_sample[:, 0], rsg_inf_sample[:, 1], c=rsg_pvals[:, 0], cmap='viridis', s=5, label='Inferred RSGs')
         plt.colorbar(label='RSG Probability')
@@ -1296,53 +1346,61 @@ class validate_selection():
                     c='coral', s=0.5, label='KDE RSGs')
 
     def calc_completeness_purity(self, gal, sim_pcut=0.8, samp_err=False):
-        rsg_truth_sample = self.generate_rsg_truth_sample(gal, ALL_CONFIGS[gal]['load_args']['z'], 
-                                                          nsamp=500, pcut=sim_pcut, gdf=self.kdf, samp_err=samp_err)
+        rsg_truth_sample, nrsg_sim = self.generate_rsg_truth_sample(gal, ALL_CONFIGS[gal]['load_args']['z'], 
+                                                                    nsamp=500, pcut=sim_pcut, gdf=self.kdf, samp_err=samp_err)
         sim_rsg_truth = self.sf.simulator(rsg_truth_sample.values)
         inf_rsg_params = []
         for idx in tqdm(range(len(sim_rsg_truth))):
             i = sim_rsg_truth[idx]
             self.sf.hatp_x_y.set_default_x(i)
-            samp = self.sf.hatp_x_y.sample((2500,), show_progress_bars=False)
+            samp = self.sf.sample_with_timeout(self.sf.hatp_x_y, sample_shape=(2500,), show_progress_bars=False, timeout=1)
+            if samp is None:
+                inf_rsg_params.append(i)
+                continue
             med = np.percentile(samp, 50, axis=0)
             inf_rsg_params.append(med)
         inf_rsg_params = np.array(inf_rsg_params)
 
         agb_truth_sample = self.generate_agb_blue_truth_sample(gal, ALL_CONFIGS[gal]['load_args']['z'], 
-                                                               nsamp=5000, pcut=0.6, gdf=self.kdf, samp_err=samp_err)
+                                                               nsamp=nrsg_sim*10, pcut=0.6, gdf=self.kdf, samp_err=samp_err)
         sim_agb_truth = self.sf.simulator(agb_truth_sample.values)
         inf_agb_params = []
         for idx in tqdm(range(len(sim_agb_truth))):
             i = sim_agb_truth[idx]
             self.sf.hatp_x_y.set_default_x(i)
-            samp = self.sf.hatp_x_y.sample((2500,), show_progress_bars=False)
+            samp = self.sf.sample_with_timeout(self.sf.hatp_x_y, sample_shape=(2500,), show_progress_bars=False, timeout=1)
+            if samp is None:
+                continue
             med = np.percentile(samp, 50, axis=0)
             inf_agb_params.append(med)
         inf_agb_params = np.array(inf_agb_params)
 
         rsg_inf_sample =  np.stack((inf_rsg_params[:, 0], inf_rsg_params[:, 3], inf_rsg_params[:, 2])).T
         # rsg_inf_sample = rsg_truth_sample[['temperature_median', 'luminosity_median', 'tau_V_median']].values
-        rsg_pvals = self.cl.kde.predict_proba(rsg_inf_sample)
-        highl_mask = (inf_rsg_params[:, 3] > 5) & (inf_rsg_params[:, 0] < 4500) & (inf_rsg_params[:, 2] > 1)
-        rsg_pvals[highl_mask, :] = np.array([[1.0, 0.0, 0.0]])
         agb_inf_sample =  np.stack((inf_agb_params[:, 0], inf_agb_params[:, 3], inf_agb_params[:, 2])).T
         # agb_inf_sample = agb_truth_sample[['temperature_median', 'luminosity_median', 'tau_V_median']].values
-        agb_pvals = self.cl.kde.predict_proba(agb_inf_sample)
+        inf_sample = np.vstack([rsg_inf_sample, agb_inf_sample])
+        inf_pvals = self.cl.kde.predict_proba(inf_sample)
+        rsg_pvals = inf_pvals[:len(rsg_inf_sample)]
+        agb_pvals = inf_pvals[len(rsg_inf_sample):]
+        highl_mask = (inf_rsg_params[:, 3] > 5) & (inf_rsg_params[:, 0] < 4500) & (inf_rsg_params[:, 2] > 1)
+        rsg_pvals[highl_mask, :] = np.array([[1.0, 0.0, 0.0]])
 
         self.plot_sim_sample(rsg_truth_sample, rsg_pvals, gal)
 
-        p7, c7 = np.sum(rsg_pvals[:, 0] > 0.8) / len(rsg_pvals) * 100, ((rsg_pvals[:, 0] > 0.8).sum() / ((rsg_pvals[:, 0] > 0.8).sum() + (agb_pvals[:, 0] > 0.8).sum()))*100
-        p8, c8 = np.sum(rsg_pvals[:, 0] > 0.9) / len(rsg_pvals) * 100, ((rsg_pvals[:, 0] > 0.9).sum() / ((rsg_pvals[:, 0] > 0.9).sum() + (agb_pvals[:, 0] > 0.9).sum()))*100
-        p9, c9 = np.sum(rsg_pvals[:, 0] > 0.95) / len(rsg_pvals) * 100, ((rsg_pvals[:, 0] > 0.95).sum() / ((rsg_pvals[:, 0] > 0.95).sum() + (agb_pvals[:, 0] > 0.95).sum()))*100
+        p7, c7 = np.sum(rsg_pvals[:, 0] > 0.7) / len(rsg_pvals) * 100, ((rsg_pvals[:, 0] > 0.7).sum() / ((rsg_pvals[:, 0] > 0.7).sum() + (agb_pvals[:, 0] > 0.7).sum()))*100
+        p8, c8 = np.sum(rsg_pvals[:, 0] > 0.8) / len(rsg_pvals) * 100, ((rsg_pvals[:, 0] > 0.8).sum() / ((rsg_pvals[:, 0] > 0.8).sum() + (agb_pvals[:, 0] > 0.8).sum()))*100
+        p9, c9 = np.sum(rsg_pvals[:, 0] > 0.9) / len(rsg_pvals) * 100, ((rsg_pvals[:, 0] > 0.9).sum() / ((rsg_pvals[:, 0] > 0.9).sum() + (agb_pvals[:, 0] > 0.9).sum()))*100
         self.logger.info(f"Completeness and purity for {gal.upper()} RSGs:")
-        self.logger.info(f"  pcut=0.8  →  Completeness: {p7:.1f}%  |  Purity: {c7:.1f}%")
-        self.logger.info(f"  pcut=0.9  →  Completeness: {p8:.1f}%  |  Purity: {c8:.1f}%")
-        self.logger.info(f"  pcut=0.95  →  Completeness: {p9:.1f}%  |  Purity: {c9:.1f}%")
+        self.logger.info(f"  pcut=0.7  →  Completeness: {p7:.1f}%  |  Purity: {c7:.1f}%")
+        self.logger.info(f"  pcut=0.8  →  Completeness: {p8:.1f}%  |  Purity: {c8:.1f}%")
+        self.logger.info(f"  pcut=0.9  →  Completeness: {p9:.1f}%  |  Purity: {c9:.1f}%")
 
-        self.plot_purity_completeness_curve(rsg_pvals, agb_pvals, gal)
+        p, c = self.plot_purity_completeness_curve(rsg_pvals, agb_pvals)
         self.plot_sim_on_cmd(sim_rsg_truth, rsg_pvals, gal)
-        self.plot_sbi_hrd(rsg_inf_sample, rsg_truth_sample, rsg_pvals, gal)
+        self.plot_sbi_hrd(rsg_inf_sample, rsg_truth_sample, rsg_pvals)
 
+        return p, c
     
 def run_sc(gal):
     try:
@@ -1359,70 +1417,6 @@ def run_sc(gal):
     except Exception as e:
         print(f"Error processing {gal}: {e}")
         traceback.print_exc()
-
-def generate_rsg_truth_sample(gal, met, pcut=0.7, nsamp=20000, gdf=None):
-    cdf = pd.read_csv('../notebooks/hack/combined_cat.csv')
-    if gdf is None:
-        gdf = pd.read_csv(f'../data/dolphot/{gal}/{gal}_kdecat.csv')
-    # subset = cdf[(cdf['galaxy'].isin(Z_MAPPING[met])) & (cdf['p_rsg'] > pcut)]
-    subset = gdf[gdf['p_rsg'] > pcut]
-    adap_kde = AdaptiveKDE(alpha=-0.5)
-    X = subset[['temperature_median', 'luminosity_median', 'tau_V_median']].values
-    # sig = (subset[['temperature_elow', 'luminosity_elow', 'tau_V_elow']].values + \
-    #         subset[['temperature_eup', 'luminosity_eup', 'tau_V_eup']].values)/2
-    # X = np.random.normal(loc=X, scale=sig, size=(50, X.shape[0], X.shape[1])).reshape(-1, X.shape[1])
-    # resamp_idx = np.random.choice(range(X.shape[0]), size=10000, replace=False)
-    # X = X[resamp_idx]
-    y = np.array([0] * X.shape[0])
-    adap_kde = adap_kde.fit(X, y, class_names=['RSG'])
-    resamp = adap_kde.scaler.inverse_transform(adap_kde.kdes[0].resample(nsamp).T)
-    resamp[:, 0] = np.clip(resamp[:, 0], 2000, 5000)
-    resamp[:, 1] = np.clip(resamp[:, 1], 3.0, 6.0)
-    resamp[:, 2] = np.clip(resamp[:, 2], 1e-4, 12.0)
-
-    tdust_kde = gaussian_kde(subset['dust_temp_median'].values)
-    av_kde = gaussian_kde(subset['Av_median'].values)
-    rv_kde = gaussian_kde(subset['Rv_median'].values)
-    tdust_resamp = np.clip(tdust_kde.resample(nsamp).flatten(), 200, 1800)
-    av_resamp = np.clip(av_kde.resample(nsamp).flatten(), 0.01, 5.0)
-    rv_resamp = np.clip(rv_kde.resample(nsamp).flatten(), 2.0, 6.0)
-    resamp = np.hstack([resamp, tdust_resamp[:, None], av_resamp[:, None], rv_resamp[:, None]])
-
-    truth_df = pd.DataFrame(resamp, columns=['temperature_median', 'luminosity_median', 'tau_V_median', 'dust_temp_median', 'Av_median', 'Rv_median'])
-    truth_df = truth_df[['temperature_median', 'dust_temp_median', 'tau_V_median', 'luminosity_median', 'Rv_median', 'Av_median']]
-    return truth_df
-
-def generate_agb_blue_truth_sample(gal, met, pcut=0.7, nsamp=20000, gdf=None):
-    cdf = pd.read_csv('../notebooks/hack/combined_cat.csv')
-    if gdf is None:
-        gdf = pd.read_csv(f'../data/dolphot/{gal}/{gal}_kdecat.csv')
-    # subset = cdf[(cdf['galaxy'].isin(Z_MAPPING[met])) & ((cdf['p_agb'] > pcut) | (cdf['p_blue'] > pcut))].sample(100000, random_state=42)
-    subset = gdf[(gdf['p_agb'] > pcut) | (gdf['p_blue'] > pcut)]
-    adap_kde = AdaptiveKDE(alpha=-0.5)
-    X = subset[['temperature_median', 'luminosity_median', 'tau_V_median']].values
-    # sig = (subset[['temperature_elow', 'luminosity_elow', 'tau_V_elow']].values + \
-    #         subset[['temperature_eup', 'luminosity_eup', 'tau_V_eup']].values)/2
-    # X = np.random.normal(loc=X, scale=sig, size=(50, X.shape[0], X.shape[1])).reshape(-1, X.shape[1])
-    # resamp_idx = np.random.choice(range(X.shape[0]), size=10000, replace=False)
-    # X = X[resamp_idx]
-    y = np.array([0] * X.shape[0])
-    adap_kde = adap_kde.fit(X, y, class_names=['AGB'])
-    resamp = adap_kde.scaler.inverse_transform(adap_kde.kdes[0].resample(nsamp).T)
-    resamp[:, 0] = np.clip(resamp[:, 0], 2601, 4990)
-    resamp[:, 1] = np.clip(resamp[:, 1], 3.01, 5.99)
-    resamp[:, 2] = np.clip(resamp[:, 2], 1e-3, 10.0)
-
-    tdust_kde = gaussian_kde(subset['dust_temp_median'].values)
-    av_kde = gaussian_kde(subset['Av_median'].values)
-    rv_kde = gaussian_kde(subset['Rv_median'].values)
-    tdust_resamp = np.clip(tdust_kde.resample(nsamp).flatten(), 210, 1780)
-    av_resamp = np.clip(av_kde.resample(nsamp).flatten(), 0.02, 4.9)
-    rv_resamp = np.clip(rv_kde.resample(nsamp).flatten(), 2.1, 5.9)
-    resamp = np.hstack([resamp, tdust_resamp[:, None], av_resamp[:, None], rv_resamp[:, None]])
-    
-    truth_df = pd.DataFrame(resamp, columns=['temperature_median', 'luminosity_median', 'tau_V_median', 'dust_temp_median', 'Av_median', 'Rv_median'])
-    truth_df = truth_df[['temperature_median', 'dust_temp_median', 'tau_V_median', 'luminosity_median', 'Rv_median', 'Av_median']]
-    return truth_df
 
 if __name__ == "__main__":
 

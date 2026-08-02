@@ -173,9 +173,9 @@ class rsg_dataloader(object):
 
     def base_cuts(self, cat, min_det=4):
         def detmask(cat_mags_det, min_det=4):
-            opt_dets = cat_mags_det[cat_mags_det.columns[(self.cols['cat_wv'] < 1.2)]]
-            nir_dets = cat_mags_det[cat_mags_det.columns[(self.cols['cat_wv'] < 2.6)]]
-            mir_dets = cat_mags_det[cat_mags_det.columns[(self.cols['cat_wv'] > 2.6)]]
+            opt_dets = cat_mags_det[cat_mags_det.columns[(self.cols['cat_wv'][self.flt_mask] < 1.2)]]
+            nir_dets = cat_mags_det[cat_mags_det.columns[(self.cols['cat_wv'][self.flt_mask] < 2.6)]]
+            mir_dets = cat_mags_det[cat_mags_det.columns[(self.cols['cat_wv'][self.flt_mask] > 2.6)]]
 
             ndetm = cat_mags_det.sum(axis=1) >= min_det
             detm = (nir_dets.sum(axis=1) > 0) & (mir_dets.sum(axis=1) > 0) & ndetm
@@ -205,10 +205,10 @@ class rsg_dataloader(object):
         max_model = np.min(base_models[base_models[:, self.trgb[0]] < self.trgb[1]], axis=0)
         max_model_df = pd.DataFrame([dict(zip(basedf_cols, max_model))])
 
-        cat_mags = cat[self.cols['magcols']].replace(99.999, 0.5)
-        mindf = cat_mags-min_model_df[self.cols['magcols']].to_numpy()
+        cat_mags = cat[self.cols['magcols'][self.flt_mask]].replace(99.999, 0.5)
+        mindf = cat_mags-min_model_df[self.cols['magcols'][self.flt_mask]].to_numpy()
         cat_mags = cat_mags.replace(0.5, 99.999)
-        maxdf = cat_mags-max_model_df[self.cols['magcols']].to_numpy()
+        maxdf = cat_mags-max_model_df[self.cols['magcols'][self.flt_mask]].to_numpy()
 
         difm = (mindf < 0).all(axis=1) & (maxdf > 0).all(axis=1)
         ndet = (cat_mags > 10) & (cat_mags < 38) 
@@ -296,7 +296,7 @@ class rsg_dataloader(object):
             base_rsgcat.loc[idx, ['chimin', 'lum_chisq']] = c_, l_
             base_rsgcat.loc[idx, ['teff_chisq', 'tdust_chisq', 'tau_chisq', 'av_chisq']] = modeldf.loc[m_, ['Teff', 'Tdust', 'Tau', 'Av']].values
 
-        chi_cut = np.percentile(base_rsgcat['chimin'], 75)
+        chi_cut = np.percentile(base_rsgcat['chimin'], 90)
         mask = base_rsgcat['chimin'] < chi_cut
 
         rsgcat = base_rsgcat[mask]

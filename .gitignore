@@ -6,6 +6,7 @@ sbi-logs/
 data/rsg*
 examples/
 .vscode/
+jwstrsg-vault/
 PKG-INFO
 *csv
 *png
@@ -25,10 +26,14 @@ PKG-INFO
 *.pt
 *.html
 *mplstyle
+*data
+*INPUT_XYZ
 att_mask.py
 frbcat.ipynb
 plots.ipynb
 kdecat.ipynb
+analysis.ipynb
 spec.ipynb
 sbi.ipynb
 inference.ipynb
+*.ipynb
