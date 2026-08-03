@@ -299,12 +299,15 @@ class dusty_gen(object):
             # update user parameter file
             with open(parfile, 'r') as f:
                 par_lines = f.readlines()
-            par_lines[15] = f'      PARAMETER (npL={len(self.dusty_lambda_grid)})'
+            par_lines[15] = f'      PARAMETER (npL={len(self.dusty_lambda_grid)})\n'
             with open(parfile, 'w') as f:
                 f.writelines(par_lines)
 
             # recompile dusty
+            curdir = os.getcwd()
+            os.chdir(self.dusty_basedir)
             subprocess.run(['gfortran', 'dustyV2.f', '-std=legacy', '-o', 'dusty'])
+            os.chdir(curdir)
 
         default_tau = np.array(list(np.arange(0.0, 1.1, 0.1)) + list(np.arange(1.5, 6.0, 0.5)) + list(np.arange(6.0, 13.0, 1.0)) +\
                         list(np.arange(15.0, 33.0, 2.0)) + list(np.arange(35.0, 61.0, 5.0))) 
