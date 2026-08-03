@@ -254,6 +254,8 @@ class dusty_gen(object):
         # DUSTY setup 
         self.dusty_basedir = os.environ['DUSTY_PATH'] #full path
         self.dusty_datadir = outdir # full path
+        # conditions: successive wavalengths need to larger by less than a factor of 1.5
+        # minimum wavelength = 0.01 micron, maximum wavelength = 3.6e4 micron
         self.dusty_lambda_grid = list(np.logspace(np.log10(0.01), np.log10(0.6), num = 100)) +\
                                  list(np.logspace(np.log10(0.6), np.log10(30), num = 1800)) +\
                                  list(np.logspace(np.log10(30), np.log10(3.6e4), num = 200))
@@ -306,16 +308,19 @@ class dusty_gen(object):
             # recompile dusty
             curdir = os.getcwd()
             os.chdir(self.dusty_basedir)
+            # if compile fails, use '-mcmodel=large' flag for gfortran - this is due to large grid size in lambda_grid.dat
             subprocess.run(['gfortran', 'dustyV2.f', '-std=legacy', '-o', 'dusty'])
             os.chdir(curdir)
 
         default_tau = np.array(list(np.arange(0.0, 1.1, 0.1)) + list(np.arange(1.5, 6.0, 0.5)) + list(np.arange(6.0, 13.0, 1.0)) +\
                         list(np.arange(15.0, 33.0, 2.0)) + list(np.arange(35.0, 61.0, 5.0))) 
+        # If the first entry is 0, dusty will throw a non-invertible matrix error. Minimum value is 1e-4
+        default_tau[0] = 1e-4
         taufile = os.path.join(self.dusty_basedir, 'taugrid.dat')
         exist_tau = np.loadtxt(taufile, skiprows=1, dtype=float)
         if len(exist_tau) != len(default_tau):
             replace_tau = True
-        elif (np.abs(exist_tau - default_tau) > 1e-4).any():
+        elif (np.abs(exist_tau - default_tau) > 1e-5).any():
             replace_tau = True
         else:
             replace_tau = False
