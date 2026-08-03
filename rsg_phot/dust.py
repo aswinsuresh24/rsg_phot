@@ -377,7 +377,7 @@ class dusty_gen(object):
                 f.write('           x =  0.00    0.00    0.00    1.00    0.00    0.00\n\n')
             f.write('       2.2 Grain size distribution\n\n')
             f.write('          Size distribution = 2 % arbitrary MRN\n')
-            f.write('          q = 3.5, a(min) = 0.005 micron, a(max) = 1.00 micron\n\n')
+            f.write('          q = 3.0, a(min) = 0.05 micron, a(max) = 1.00 micron\n\n')
             f.write('       2.3 Dust temperature on inner boundary:\n\n')
             f.write(f'        - temperature = {p['dust_temp'].value} K\n\n')
             f.write('     3) Density Distribution\n')
