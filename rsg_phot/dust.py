@@ -255,7 +255,7 @@ class dusty_gen(object):
         self.dusty_basedir = os.environ['DUSTY_PATH'] #full path
         self.dusty_datadir = outdir # full path
         self.dusty_lambda_grid = list(np.logspace(np.log10(0.01), np.log10(0.6), num = 100)) +\
-                                 list(np.logspace(np.log10(0.6), np.log10(30), num = 1000)) +\
+                                 list(np.logspace(np.log10(0.6), np.log10(30), num = 1800)) +\
                                  list(np.logspace(np.log10(30), np.log10(3.6e4), num = 200))
         self.dusty_lambda_grid = np.array(self.dusty_lambda_grid)
         self.dusty_n_taugrid = 27
