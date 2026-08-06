@@ -457,7 +457,7 @@ class dusty_gen(object):
         #           - basename.hdf5 (dusty_tb_file)
 
         basename = f'rsg_{p['temp'].value}_{p['dust_temp'].value}'
-        outdir = os.path.join(filedir, 'dusty_out', basename)
+        outdir = os.path.join(filedir, f'dusty_{dust_comp}_out', basename)
         outfile = os.path.join(outdir, basename + '.out')
 
         # run dusty
