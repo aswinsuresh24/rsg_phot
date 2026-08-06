@@ -98,7 +98,10 @@ class rsg_phot(object):
                           'F212N','F250M','F277W','F300M','F322W2','F323N',
                           'F335M','F356W','F360M','F405N','F410M','F430M',
                           'F444W','F460M','F466N','F470N','F480M']
-        
+        self.miri_filts = ['F0560W','F0770W','F1000W','F1130W','F1280W','F1500W',
+                           'F1800W','F2100W','F2550W']
+        self.jwst_filts = {'NIRCAM': self.nrc_filts, 'MIRI': self.miri_filts}
+                
     def extinction_law(self, wave, Av, Rv, deredden=False):
 
         # Inverse wavelength dependent quantities
@@ -264,14 +267,14 @@ class rsg_phot(object):
         grid_taus = np.loadtxt(outfile_, skiprows=42, max_rows = ntau)[:, 1]
 
         if loglums is None:
-            loglums = np.array([3, 6])
+            loglums = np.array([3, 8])
         if rv is None:
             rv = np.array([1.0, 2.0, 3.0, 4.0, 5.0, 6.0])
         if av is None:
             av = np.array([0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.75, 1.0, 2.0, 3.0, 4.0, 5.0])
 
         mags = {}
-        for flt in self.nrc_filts:
+        for flt in (self.nrc_filts + self.miri_filts):
             mags[flt] = np.zeros((len(grid_temps), len(grid_dust_temps), len(grid_taus), len(loglums), len(rv), len(av)))
 
         for i, te in enumerate(grid_temps):
@@ -304,21 +307,22 @@ class rsg_phot(object):
                             flux_ext = flux*host_ext
                             sp = synphot.SourceSpectrum(Empirical1D, points=wv, lookup_table=(flux_ext/energy).value)
 
-                            for flt in self.nrc_filts:
-                                bp = self.get_jwst_filters('NIRCAM,' + flt)
-                                kwargs = {'force': 'taper', 'binset': wv}
-                                obs = synphot.Observation(sp, bp, **kwargs)
-                                mag = obs.effstim(self.magsystem)
-                                
-                                for l, logl in enumerate(loglums):
-                                    logl = logl - 4
-                                    scale_mag = mag.value-2.5*logl                                    
-                                    mags[flt][i, j, k ,l, m, n] = scale_mag
+                            for inst in self.jwst_filts.keys():
+                                for flt in self.jwst_filts[inst]:
+                                    bp = self.get_jwst_filters(inst + ',' + flt)
+                                    kwargs = {'force': 'taper', 'binset': wv}
+                                    obs = synphot.Observation(sp, bp, **kwargs)
+                                    mag = obs.effstim(self.magsystem)
+                                    
+                                    for l, logl in enumerate(loglums):
+                                        logl = logl - 4
+                                        scale_mag = mag.value-2.5*logl
+                                        mags[flt][i, j, k ,l, m, n] = scale_mag
 
         models = {}
         params = (grid_temps, grid_dust_temps, grid_taus, loglums, rv, av)
 
-        for flt in self.nrc_filts:
+        for flt in (self.nrc_filts + self.miri_filts):
             models[flt] = interpolate.RegularGridInterpolator(params, mags[flt], method='linear', bounds_error=True)
 
         pfile = os.path.join(outdir, f'{modelname}.pkl')
