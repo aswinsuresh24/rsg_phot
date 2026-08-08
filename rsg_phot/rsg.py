@@ -4,7 +4,7 @@ import stsynphot
 import synphot
 from synphot import SpectralElement
 from synphot.models import Empirical1D
-import os, glob, sys
+import os, glob, sys, shutil
 import numpy as np
 from astropy.io import fits, ascii
 import astropy.units as u
@@ -15,6 +15,7 @@ import matplotlib.pyplot as plt
 from rsg_phot.dust import dustgen
 from astropy.io.misc.hdf5 import read_table_hdf5
 import pickle
+from rsg_phot.utils import logger
 
 def create_parser():
     '''
@@ -29,9 +30,109 @@ def create_parser():
     parser.add_argument('--subdir', type=str, help='Directory containing DUSTY grids')
     parser.add_argument('--outdir', type=str, default='data/interpolate', help='Output directory of picke file')
     parser.add_argument('--modelname', type=str, default='rsg', help='Name of output pickle file')
-    parser.add_argument('--ntau', type=int, default=27, help='Number of points in tau grid')
     parser.add_argument('--norm', type=bool, default=False, help='Normalize spectra?')
+    parser.add_argument('--nproc', type=int, default=None,
+                        help='Number of worker processes (default: cores allocated to the job)')
     return parser
+
+def read_dusty_taus(outfile):
+    '''
+    Read the tau0 grid from the RESULTS table of a DUSTY .out file.
+
+    Parameters
+    ----------
+    outfile : str
+        Path to a DUSTY .out file
+
+    Returns
+    -------
+    taus : np.ndarray
+        Strictly ascending array of tau0 values
+
+    Raises
+    ------
+    ValueError
+        If the results table is missing (e.g. the DUSTY run crashed) or the
+        tau values are not strictly ascending.
+    '''
+    with open(outfile) as f:
+        lines = f.readlines()
+
+    # Locate the table header rather than hard-coding a line offset
+    start = None
+    for n, line in enumerate(lines):
+        if line.lstrip().startswith('###') and 'tau0' in line:
+            start = n
+            break
+
+    if start is None:
+        raise ValueError(f'No RESULTS table found in {outfile} - the DUSTY '
+                          'run probably failed, check the file for errors')
+
+    taus = []
+    for line in lines[start+1:]:
+        s = line.strip()
+        # Skip the second '###' header row and the opening '=====' rule;
+        # the matching closing rule terminates the table.
+        if not s or s.startswith('###') or set(s) == {'='}:
+            if taus:
+                break
+            continue
+        parts = s.split()
+        try:
+            int(parts[0])
+            tau = float(parts[1])
+        except (ValueError, IndexError):
+            break
+        taus.append(tau)
+
+    if not taus:
+        raise ValueError(f'RESULTS table in {outfile} contains no tau values')
+
+    taus = np.array(taus)
+
+    # RegularGridInterpolator requires strictly ascending axes
+    if not np.all(np.diff(taus) > 0):
+        raise ValueError(f'tau values in {outfile} are not strictly ascending: {taus}')
+
+    return taus
+
+def available_cpus():
+    '''
+    Number of CPUs actually available to this process.
+
+    os.cpu_count() reports the whole machine, which oversubscribes badly on a
+    scheduler-allocated cluster node, so prefer the job allocation.
+    '''
+    n = os.environ.get('SLURM_CPUS_PER_TASK')
+    if n:
+        return int(n)
+    if hasattr(os, 'sched_getaffinity'):
+        return len(os.sched_getaffinity(0))
+    return os.cpu_count() or 1
+
+# Worker-process state, populated once per process by the pool initializer so
+# that the rsg_phot instance and the bandpasses are not re-pickled per task.
+_WORKER = {}
+
+def _init_worker(rsg_obj, static):
+    # Rebuild the bandpasses in the worker rather than shipping them from the
+    # parent. Pickling a synphot Empirical1D silently changes its behaviour
+    # outside the waveset from holding the edge value to returning NaN, which
+    # makes Observation.effstim raise 'Integrated flux is NaN' for any filter
+    # whose support extends past the model spectrum (e.g. MIRI F2550W).
+    _WORKER['rsg'] = rsg_obj
+    _WORKER['static'] = static
+    _WORKER['bp_cache'] = {flt: rsg_obj.get_jwst_filters(inst + ',' + flt)
+                           for inst, flts in rsg_obj.jwst_filts.items() for flt in flts}
+
+def _pair_worker(task):
+    i, j, te, td = task
+    s = _WORKER['static']
+    pair_mags = _WORKER['rsg']._compute_pair_mags(
+        s['subdir'], te, td, s['ntau'], s['norm'], s['loglums'],
+        s['rv'], s['av'], _WORKER['bp_cache'], s['all_filts'])
+    return i, j, pair_mags
 
 class rsg_phot(object):
     def __init__(self, verbose=True, interpolate=True):
@@ -40,7 +141,7 @@ class rsg_phot(object):
         try:
             self.pandeia = os.environ['pandeia_refdata']
         except:
-            print('WARNING: if using JWST filters, set PANDEIA env variable')
+            logger.warning('if using JWST filters, set PANDEIA env variable')
             self.pandeia = None
 
         # Magnitude system of input data (AB is usually best)
@@ -258,13 +359,99 @@ class rsg_phot(object):
 
         return(mags)
     
-    def create_rsg_grid(self, subdir, modelname, outdir='data/interpolate', ntau=27, norm=False, loglums=None, av=None, rv=None):
+    def _compute_pair_mags(self, subdir, te, td, ntau, norm, loglums, rv, av, bp_cache, all_filts):
+        '''
+        Compute the (tau, loglum, rv, av) magnitude cube for a single
+        (temp, dust_temp) grid point. Independent of every other grid
+        point, so this is the unit of work handed to worker processes.
+        '''
+        sd = f'rsg_{te}_{td}'
+        specfile = os.path.join(subdir, sd, sd+'.hdf5')
+        spectable = read_table_hdf5(specfile)
+        wv = spectable['lambda'].to(u.Angstrom)
+        _, mask = np.unique(wv, return_index=True)
+        wv = wv[mask]
+        energy = (const.h*const.c/wv).to(u.erg)
+        logger.info(specfile)
+
+        # One flux column per tau; a mismatch means the spectra and the .out
+        # table disagree, which would silently mis-index the tau axis.
+        cols = list(spectable.columns[1:])
+        if len(cols) != ntau:
+            raise ValueError(f'{specfile} has {len(cols)} flux columns but the '
+                             f'DUSTY .out table lists {ntau} optical depths')
+
+        # precompute host extinction
+        host_ext_grid = {
+            (m, n): self.extinction_law(wv.value, Av_, Rv_)
+            for m, Rv_ in enumerate(rv) for n, Av_ in enumerate(av)
+        }
+
+        pair_shape = (ntau, len(loglums), len(rv), len(av))
+        pair_mags = {flt: np.zeros(pair_shape) for flt in all_filts}
+
+        for k, col in enumerate(cols):
+            if norm:
+                flux = spectable[col][mask]
+                normalize = simpson(flux, x=wv.to(u.um).value)
+                flux = self.flux_scale * flux/normalize / u.micron
+                flux = flux.to(u.erg/u.s/u.cm**2/u.Angstrom)
+            else:
+                # Fail loudly: falling through here would silently reuse the
+                # previous tau's flux and write wrong mags into the grid.
+                flux = spectable[col][mask]
+                try:
+                    flux = flux.to(u.erg/u.s/u.cm**2/u.Angstrom)
+                except u.UnitConversionError as e:
+                    raise ValueError(f'Incorrect flux units in {specfile} column '
+                                     f'{col!r}: cannot convert {flux.unit} to '
+                                     'erg/s/cm2/Angstrom') from e
+
+            for m in range(len(rv)):
+                for n in range(len(av)):
+                    host_ext = host_ext_grid[(m, n)]
+                    flux_ext = flux*host_ext
+                    sp = synphot.SourceSpectrum(Empirical1D, points=wv, lookup_table=(flux_ext/energy).value)
+
+                    for flt in all_filts:
+                        bp = bp_cache[flt]
+                        kwargs = {'force': 'taper', 'binset': wv}
+                        obs = synphot.Observation(sp, bp, **kwargs)
+                        mag = obs.effstim(self.magsystem)
+
+                        for l, logl in enumerate(loglums):
+                            logl = logl - 4
+                            scale_mag = mag.value-2.5*logl
+                            pair_mags[flt][k, l, m, n] = scale_mag
+
+        return pair_mags
+
+    def create_rsg_grid(self, subdir, modelname, outdir='data/interpolate', norm=False,
+                         loglums=None, av=None, rv=None, nproc=None):
 
         all_grids = sorted(glob.glob(subdir + '/rsg*'))
+        if not all_grids:
+            raise ValueError(f'No rsg* model directories found in {subdir}')
+
         grid_temps = np.unique([float(os.path.basename(i).split('_')[1]) for i in all_grids])
         grid_dust_temps = np.unique([float(os.path.basename(i).split('_')[2]) for i in all_grids])
-        outfile_ = os.path.join(subdir, f'rsg_{grid_temps[0]}_{grid_dust_temps[0]}', f'rsg_{grid_temps[0]}_{grid_dust_temps[0]}.out')
-        grid_taus = np.loadtxt(outfile_, skiprows=42, max_rows = ntau)[:, 1]
+
+        # The tau axis is a property of the DUSTY runs, so read it from the
+        # .out tables instead of assuming a count. Every pair must agree,
+        # otherwise there is no single tau axis to interpolate over.
+        grid_taus = None
+        for i, te in enumerate(grid_temps):
+            for j, td in enumerate(grid_dust_temps):
+                sd = f'rsg_{te}_{td}'
+                taus = read_dusty_taus(os.path.join(subdir, sd, sd+'.out'))
+                if grid_taus is None:
+                    grid_taus, tau_ref = taus, sd
+                elif not np.array_equal(taus, grid_taus):
+                    raise ValueError(f'tau grid in {sd} ({len(taus)} values) does not '
+                                     f'match {tau_ref} ({len(grid_taus)} values); all '
+                                     'DUSTY runs must share one tau grid')
+        ntau = len(grid_taus)
+        logger.info(f'Read {ntau} optical depths from the DUSTY .out tables')
 
         if loglums is None:
             loglums = np.array([3, 8])
@@ -273,60 +460,106 @@ class rsg_phot(object):
         if av is None:
             av = np.array([0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.75, 1.0, 2.0, 3.0, 4.0, 5.0])
 
-        mags = {}
-        for flt in (self.nrc_filts + self.miri_filts):
-            mags[flt] = np.zeros((len(grid_temps), len(grid_dust_temps), len(grid_taus), len(loglums), len(rv), len(av)))
+        all_filts = self.nrc_filts + self.miri_filts
 
-        for i, te in enumerate(grid_temps):
-            for j, td in enumerate(grid_dust_temps):
-                sd = f'rsg_{te}_{td}'
-                specfile = os.path.join(subdir, sd, sd+'.hdf5')
-                spectable = read_table_hdf5(specfile)
-                wv = spectable['lambda'].to(u.Angstrom)
-                _, mask = np.unique(wv, return_index=True)
-                wv = wv[mask]
-                energy = (const.h*const.c/wv).to(u.erg)
-                print(specfile)
+        # Cache bandpasses for the serial path. Workers rebuild their own (see
+        # _init_worker), but building them here first also fails fast if the
+        # filter files are missing, before any pairs are computed.
+        bp_cache = {}
+        for inst in self.jwst_filts.keys():
+            for flt in self.jwst_filts[inst]:
+                bp_cache[flt] = self.get_jwst_filters(inst + ',' + flt)
 
-                for k, col in enumerate(spectable.columns[1:]):
-                    if norm:
-                        flux = spectable[col][mask]
-                        normalize = simpson(flux, x=wv.to(u.um).value)
-                        flux = self.flux_scale * flux/normalize / u.micron
-                        flux = flux.to(u.erg/u.s/u.cm**2/u.Angstrom)
-                    else:
-                        try:
-                            flux = spectable[col][mask].to(u.erg/u.s/u.cm**2/u.Angstrom)
-                        except Exception as e:
-                            print(e)
-                            print('Incorrect flux units in model grid')
+        grid_shape = (len(grid_temps), len(grid_dust_temps), ntau, len(loglums), len(rv), len(av))
 
-                    for m, Rv_ in enumerate(rv):
-                        for n, Av_ in enumerate(av):
-                            host_ext = self.extinction_law(wv.value, Av_, Rv_)
-                            flux_ext = flux*host_ext
-                            sp = synphot.SourceSpectrum(Empirical1D, points=wv, lookup_table=(flux_ext/energy).value)
+        # Checkpoint as one small file per (temp, dust_temp) pair. Rewriting
+        # the whole grid after every pair would cost O(grid) I/O per pair,
+        # which for a full run is tens of GB of redundant writes.
+        ckpt_dir = os.path.join(outdir, f'{modelname}_checkpoint')
+        os.makedirs(ckpt_dir, exist_ok=True)
 
-                            for inst in self.jwst_filts.keys():
-                                for flt in self.jwst_filts[inst]:
-                                    bp = self.get_jwst_filters(inst + ',' + flt)
-                                    kwargs = {'force': 'taper', 'binset': wv}
-                                    obs = synphot.Observation(sp, bp, **kwargs)
-                                    mag = obs.effstim(self.magsystem)
-                                    
-                                    for l, logl in enumerate(loglums):
-                                        logl = logl - 4
-                                        scale_mag = mag.value-2.5*logl
-                                        mags[flt][i, j, k ,l, m, n] = scale_mag
+        # A resumed run must describe the same grid, or the reused pair files
+        # would be silently mixed into a grid they do not belong to.
+        meta = {'grid_temps': grid_temps, 'grid_dust_temps': grid_dust_temps,
+                'grid_taus': grid_taus, 'loglums': loglums, 'rv': rv, 'av': av,
+                'norm': bool(norm), 'filters': all_filts}
+        meta_file = os.path.join(ckpt_dir, 'meta.pkl')
+        if os.path.exists(meta_file):
+            with open(meta_file, 'rb') as f:
+                old = pickle.load(f)
+            for key, val in meta.items():
+                if not np.array_equal(np.asarray(old.get(key)), np.asarray(val)):
+                    raise ValueError(
+                        f'Checkpoint in {ckpt_dir} was built with a different {key} '
+                        f'({old.get(key)!r} vs {val!r}). Delete the directory to '
+                        'rebuild from scratch.')
+        else:
+            with open(meta_file, 'wb') as f:
+                pickle.dump(meta, f)
+
+        def pair_path(i, j):
+            return os.path.join(ckpt_dir, f'pair_{i:04d}_{j:04d}.npz')
+
+        def save_pair(i, j, pair_mags):
+            tmp = pair_path(i, j) + '.tmp'
+            with open(tmp, 'wb') as f:
+                np.savez(f, **pair_mags)
+            os.replace(tmp, pair_path(i, j))
+
+        all_pairs = [(i, j, te, td) for i, te in enumerate(grid_temps)
+                     for j, td in enumerate(grid_dust_temps)]
+        pending = [p for p in all_pairs if not os.path.exists(pair_path(p[0], p[1]))]
+
+        ndone = len(all_pairs) - len(pending)
+        if ndone:
+            logger.info(f'Resuming: {ndone}/{len(all_pairs)} (temp, dust_temp) pairs already done')
+
+        if nproc is None:
+            nproc = available_cpus()
+        nproc = max(1, min(nproc, len(pending) or 1))
+        logger.info(f'Computing {len(pending)} pairs on {nproc} process(es)')
+
+        # Each (temp, dust_temp) pair is independent, so farm them out across
+        # processes. Each result is checkpointed as it lands, so a timeout
+        # only loses the pairs still in flight.
+        if nproc > 1:
+            import concurrent.futures as cf
+            static = {'subdir': subdir, 'ntau': ntau, 'norm': norm, 'loglums': loglums,
+                      'rv': rv, 'av': av, 'all_filts': all_filts}
+            # Set up each worker once via the initializer rather than
+            # re-pickling the configuration with every task.
+            with cf.ProcessPoolExecutor(max_workers=nproc, initializer=_init_worker,
+                                        initargs=(self, static)) as pool:
+                futures = {pool.submit(_pair_worker, (i, j, te, td)): (i, j)
+                           for i, j, te, td in pending}
+                for fut in cf.as_completed(futures):
+                    i, j, pair_mags = fut.result()
+                    save_pair(i, j, pair_mags)
+        else:
+            for i, j, te, td in pending:
+                pair_mags = self._compute_pair_mags(subdir, te, td, ntau, norm,
+                                                    loglums, rv, av, bp_cache, all_filts)
+                save_pair(i, j, pair_mags)
+
+        # Assemble the full grid from the per-pair checkpoints
+        mags = {flt: np.zeros(grid_shape) for flt in all_filts}
+        for i, j, _, _ in all_pairs:
+            with np.load(pair_path(i, j)) as pair:
+                for flt in all_filts:
+                    mags[flt][i, j] = pair[flt]
 
         models = {}
         params = (grid_temps, grid_dust_temps, grid_taus, loglums, rv, av)
 
-        for flt in (self.nrc_filts + self.miri_filts):
+        for flt in all_filts:
             models[flt] = interpolate.RegularGridInterpolator(params, mags[flt], method='linear', bounds_error=True)
 
+        os.makedirs(outdir, exist_ok=True)
         pfile = os.path.join(outdir, f'{modelname}.pkl')
         pickle.dump(models, open(pfile, 'wb'))
+        logger.info(f'Wrote {pfile}')
+
+        shutil.rmtree(ckpt_dir, ignore_errors=True)
 
 if __name__ == '__main__':
     parser = create_parser()
@@ -334,8 +567,15 @@ if __name__ == '__main__':
     subdir = args.subdir
     outdir = args.outdir
     modelname = args.modelname
-    ntau = args.ntau
     norm = args.norm
+    nproc = args.nproc
+
+    if nproc > 1:
+        import os
+        os.environ["OMP_NUM_THREADS"] = "1"
+        os.environ["MKL_NUM_THREADS"] = "1"
+        os.environ["OPENBLAS_NUM_THREADS"] = "1"
+        os.environ["NUMEXPR_NUM_THREADS"] = "1"
 
     rsg = rsg_phot()
-    rsg.create_rsg_grid(subdir, modelname, outdir, ntau, norm)
+    rsg.create_rsg_grid(subdir, modelname, outdir, norm, nproc=nproc)
