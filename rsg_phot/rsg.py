@@ -1,10 +1,18 @@
+import os
+
+if __name__ == '__main__':
+    for _var in ('OMP_NUM_THREADS', 'MKL_NUM_THREADS',
+                 'OPENBLAS_NUM_THREADS', 'NUMEXPR_NUM_THREADS'):
+        os.environ.setdefault(_var, '1')
+
 import argparse
 import pandeia.engine
 import stsynphot
 import synphot
 from synphot import SpectralElement
 from synphot.models import Empirical1D
-import os, glob, sys, shutil
+from synphot.exceptions import SynphotError
+import glob, sys, shutil, traceback
 import numpy as np
 from astropy.io import fits, ascii
 import astropy.units as u
@@ -30,7 +38,8 @@ def create_parser():
     parser.add_argument('--subdir', type=str, help='Directory containing DUSTY grids')
     parser.add_argument('--outdir', type=str, default='data/interpolate', help='Output directory of picke file')
     parser.add_argument('--modelname', type=str, default='rsg', help='Name of output pickle file')
-    parser.add_argument('--norm', type=bool, default=False, help='Normalize spectra?')
+    parser.add_argument('--norm', default=False, action=argparse.BooleanOptionalAction,
+                        help='Normalize spectra?')
     parser.add_argument('--nproc', type=int, default=None,
                         help='Number of worker processes (default: cores allocated to the job)')
     return parser
@@ -110,6 +119,12 @@ def available_cpus():
     if hasattr(os, 'sched_getaffinity'):
         return len(os.sched_getaffinity(0))
     return os.cpu_count() or 1
+
+# Magnitude recorded when a model is extinguished to identically zero flux
+# across a whole bandpass, so effstim has no finite magnitude to return. The
+# grid has to stay finite for RegularGridInterpolator, and mag > 90 makes the
+# affected corner trivial to spot downstream.
+FAINT_MAG = 99.0
 
 # Worker-process state, populated once per process by the pool initializer so
 # that the rsg_phot instance and the bandpasses are not re-pickled per task.
@@ -389,6 +404,7 @@ class rsg_phot(object):
 
         pair_shape = (ntau, len(loglums), len(rv), len(av))
         pair_mags = {flt: np.zeros(pair_shape) for flt in all_filts}
+        nfaint = 0
 
         for k, col in enumerate(cols):
             if norm:
@@ -417,12 +433,27 @@ class rsg_phot(object):
                         bp = bp_cache[flt]
                         kwargs = {'force': 'taper', 'binset': wv}
                         obs = synphot.Observation(sp, bp, **kwargs)
-                        mag = obs.effstim(self.magsystem)
+                        try:
+                            mag = obs.effstim(self.magsystem).value
+                        except SynphotError:
+                            # The coolest models at the highest tau are
+                            # extinguished to exactly zero flux across the
+                            # bluest bands, so there is no magnitude to
+                            # compute. That is a property of the model, not a
+                            # failure, so record the sentinel and carry on
+                            # rather than killing the whole grid run.
+                            mag = FAINT_MAG
+                            nfaint += 1
 
                         for l, logl in enumerate(loglums):
                             logl = logl - 4
-                            scale_mag = mag.value-2.5*logl
+                            scale_mag = mag-2.5*logl
                             pair_mags[flt][k, l, m, n] = scale_mag
+
+        if nfaint:
+            ncell = ntau * len(rv) * len(av) * len(all_filts)
+            logger.warning(f'{os.path.basename(specfile)}: {nfaint}/{ncell} (tau, Rv, Av, filter) '
+                           f'cells had zero flux in band, set to mag {FAINT_MAG}')
 
         return pair_mags
 
@@ -522,6 +553,7 @@ class rsg_phot(object):
         # Each (temp, dust_temp) pair is independent, so farm them out across
         # processes. Each result is checkpointed as it lands, so a timeout
         # only loses the pairs still in flight.
+        failed, nsaved = [], 0
         if nproc > 1:
             import concurrent.futures as cf
             static = {'subdir': subdir, 'ntau': ntau, 'norm': norm, 'loglums': loglums,
@@ -530,16 +562,48 @@ class rsg_phot(object):
             # re-pickling the configuration with every task.
             with cf.ProcessPoolExecutor(max_workers=nproc, initializer=_init_worker,
                                         initargs=(self, static)) as pool:
-                futures = {pool.submit(_pair_worker, (i, j, te, td)): (i, j)
+                futures = {pool.submit(_pair_worker, (i, j, te, td)): (i, j, te, td)
                            for i, j, te, td in pending}
-                for fut in cf.as_completed(futures):
-                    i, j, pair_mags = fut.result()
-                    save_pair(i, j, pair_mags)
+                try:
+                    for fut in cf.as_completed(futures):
+                        i, j, te, td = futures[fut]
+                        try:
+                            _, _, pair_mags = fut.result()
+                        except Exception:
+                            # A pair that raises must not discard the pairs that
+                            # did finish, so record it and keep collecting.
+                            logger.error(f'pair rsg_{te}_{td} failed:\n{traceback.format_exc()}')
+                            failed.append(f'rsg_{te}_{td}')
+                            continue
+                        save_pair(i, j, pair_mags)
+                        nsaved += 1
+                        logger.info(f'saved rsg_{te}_{td} ({nsaved}/{len(pending)})')
+                finally:
+                    # shutdown() defaults to cancel_futures=False, which keeps
+                    # feeding every queued task to the workers before returning.
+                    # Leaving this loop early would otherwise run the whole
+                    # remaining grid for results that nobody collects.
+                    pool.shutdown(wait=False, cancel_futures=True)
         else:
             for i, j, te, td in pending:
-                pair_mags = self._compute_pair_mags(subdir, te, td, ntau, norm,
-                                                    loglums, rv, av, bp_cache, all_filts)
+                try:
+                    pair_mags = self._compute_pair_mags(subdir, te, td, ntau, norm,
+                                                        loglums, rv, av, bp_cache, all_filts)
+                except Exception:
+                    logger.error(f'pair rsg_{te}_{td} failed:\n{traceback.format_exc()}')
+                    failed.append(f'rsg_{te}_{td}')
+                    continue
                 save_pair(i, j, pair_mags)
+                nsaved += 1
+                logger.info(f'saved rsg_{te}_{td} ({nsaved}/{len(pending)})')
+
+        # There is no grid to interpolate with pairs missing, but the ones that
+        # did finish stay checkpointed so a rerun only redoes the failures.
+        if failed:
+            raise RuntimeError(
+                f'{len(failed)}/{len(pending)} pairs failed: {", ".join(failed)}. '
+                f'{nsaved} pair(s) are checkpointed in {ckpt_dir}; fix the errors '
+                'above and rerun to resume from there.')
 
         # Assemble the full grid from the per-pair checkpoints
         mags = {flt: np.zeros(grid_shape) for flt in all_filts}
@@ -569,13 +633,6 @@ if __name__ == '__main__':
     modelname = args.modelname
     norm = args.norm
     nproc = args.nproc
-
-    if nproc > 1:
-        import os
-        os.environ["OMP_NUM_THREADS"] = "1"
-        os.environ["MKL_NUM_THREADS"] = "1"
-        os.environ["OPENBLAS_NUM_THREADS"] = "1"
-        os.environ["NUMEXPR_NUM_THREADS"] = "1"
 
     rsg = rsg_phot()
     rsg.create_rsg_grid(subdir, modelname, outdir, norm, nproc=nproc)

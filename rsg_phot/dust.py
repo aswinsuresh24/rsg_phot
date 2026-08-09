@@ -476,6 +476,7 @@ class dusty_gen(object):
             os.chdir(curdir)
 
         # read outfile and spectra files
+        # BUG: self.dusty_n_taugrid is not updated if taugrid.dat is changed, so we read the number of rows in the outfile instead
         outfile_rows = np.loadtxt(outfile, skiprows=42, max_rows=self.dusty_n_taugrid)
         idx, taus = outfile_rows[:, 0], outfile_rows[:, 1]
         spec_files = [f"{os.path.join(outdir, basename)}.s{int(i):03}" for i in idx]
