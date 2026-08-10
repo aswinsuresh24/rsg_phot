@@ -18,7 +18,7 @@ import corner
 from pathlib import Path
 
 from rsg_phot.rsg_cat import save_photfiles
-from rsg_phot.mcmc import mcmc
+from rsg_phot.mcmc import mcmc, NRC_FILTS, MIRI_FILTS, MODE_FILTS, filt_wavelength
 from rsg_phot.utils import logger, TqdmToLogger
 
 def create_parser():
@@ -42,6 +42,8 @@ def create_parser():
     parser.add_argument('--trgb', nargs='*', default=('F090W', 30), help='Tip of red giant branch')
     parser.add_argument('--modeltype', type=str, default='MARCS', help='Family of RSG models to fit data to (MARCS / MARCS15 / NewEra)')
     parser.add_argument('--comp', type=str, default='sil', help='Dust composition of RSG model (sil / grf)')
+    parser.add_argument('--mode', type=str, default='nircam', choices=list(MODE_FILTS.keys()),
+                        help='Photometry to fit: nircam (NIRCam only) or miri (NIRCam + MIRI)')
     parser.add_argument('--keep_narrow', default=False, action=argparse.BooleanOptionalAction,  help='Fit narrow band photometry?')
     parser.add_argument('--ignore_filts', nargs='*', help='Photometry to avoid fitting')
 
@@ -56,9 +58,9 @@ def create_parser():
 
 class rsg_dataloader(object):
     def __init__(self, gal, procdir:Path, photfile_path=None, dm:float=30.0, dmerr:float=0.5, z:float=0.00, 
-                 modeltype:str='MARCS', trgb:tuple=('F090W', 30.0), comp:str='sil', keep_narrow:bool=False, 
-                 ignore_filts=None, rsgcat=None):
-        
+                 modeltype:str='MARCS', trgb:tuple=('F090W', 30.0), comp:str='sil', keep_narrow:bool=False,
+                 ignore_filts=None, rsgcat=None, mode:str='nircam'):
+
         self.gal = gal
         self.procdir = Path(procdir)
         self.procdir.mkdir(parents=True, exist_ok=True)
@@ -74,6 +76,15 @@ class rsg_dataloader(object):
         self.z = z
         self.modeltype = modeltype
         self.comp = comp
+        self.mode = mode.lower()
+        if self.mode not in MODE_FILTS:
+            raise ValueError(f'Mode {mode} is not valid - use one of {list(MODE_FILTS.keys())}')
+
+        self.nrc_filts = NRC_FILTS
+        self.miri_filts = MIRI_FILTS
+        # filters actually fit/plotted in this mode (nircam only, or nircam + miri)
+        self.filts = MODE_FILTS[self.mode]
+        self.wv_all = list(filt_wavelength(self.filts))
 
         if rsgcat is not None:
             if self.photfile_path is not None:
@@ -99,17 +110,12 @@ class rsg_dataloader(object):
             self.set_cols(self.cat)
             self.rsgcat = None
 
-        self.nrc_filts = np.array(['F070W','F090W','F115W','F140M','F150W', 'F150W2', 'F162M',
-                                    'F164N','F182M','F187N','F200W','F210M','F212N','F250M',
-                                    'F277W','F300M','F322W2','F323N','F335M','F356W','F360M',
-                                    'F405N','F410M','F430M','F444W','F460M','F466N','F470N','F480M'])
-        self.wv_all = [float(i.replace('F', '').replace('W2', '').replace('M', '').replace('N', '').replace('W', ''))/100 
-                       for i in self.nrc_filts]
-        self.gen_mc_obj = mcmc(dm=self.dm, dmerr=self.dmerr, z=self.z, model_type=self.modeltype, comp=self.comp)
+        self.gen_mc_obj = mcmc(dm=self.dm, dmerr=self.dmerr, z=self.z, model_type=self.modeltype,
+                               comp=self.comp, mode=self.mode)
         self.gen_mc_obj.verbose = False
         self.gen_mc_obj.dirs['backends'] = self.backend_dir
         self.trgb = trgb
-        self.trgb = (int(np.where(self.nrc_filts==self.trgb[0].upper())[0][0]), float(self.trgb[1]))
+        self.trgb = (int(np.where(self.filts==self.trgb[0].upper())[0][0]), float(self.trgb[1]))
         self.chimin_params = {
             'teff_' : np.arange(2600, 5050, 50),
             'tdust_' : np.arange(200, 1800, 100),
@@ -143,8 +149,8 @@ class rsg_dataloader(object):
     def set_cols(self, cat):
         fls = ['mag' in i for i in cat.columns]
         fls = cat.columns[fls]
-        cat_wv = np.array([float(i[1:4])/100 for i in fls])
         flts = [i.replace('_mag','') for i in fls]
+        cat_wv = filt_wavelength(flts)
         magcols = [i+'_mag' for i in flts]
         errcols = [i+'_err' for i in flts]
 
@@ -153,12 +159,17 @@ class rsg_dataloader(object):
                      'errcols' : np.array(errcols),
                      'cat_wv': cat_wv}
         
+        ign_mask = np.array([i.upper() in self.ignore_filts for i in self.cols['flts']])
+        # drop filters the mode's model grid does not cover (e.g. MIRI columns in nircam mode)
+        unknown = ~np.isin(np.char.upper(self.cols['flts'].astype(str)), self.filts)
+        if unknown.any():
+            self.logger.info(f'Ignoring filters not in the {self.mode} model grid: '
+                             f'{list(self.cols["flts"][unknown])}')
+        ign_mask |= unknown
         if not self.keep_narrow:
             narrow_mask = np.array(['N' in i for i in self.cols['flts']])
-            ign_mask = np.array([i.upper() in self.ignore_filts for i in self.cols['flts']])
             self.flt_mask = ~(narrow_mask | ign_mask)
         else:
-            ign_mask = np.array([i.upper() in self.ignore_filts for i in self.cols['flts']])
             self.flt_mask = ~ign_mask
 
     def mp_init(init_success: int = 0,
@@ -185,18 +196,18 @@ class rsg_dataloader(object):
         self.logger.info(f'Applying ndet cuts')
         self.gen_mc_obj.bounds['luminosity'] = [4.0, 4.1]
 
-        base_models = np.zeros((2000, len(self.nrc_filts)))
-        basedf_cols = [i+'_mag' for i in self.nrc_filts]
+        base_models = np.zeros((2000, len(self.filts)))
+        basedf_cols = [i+'_mag' for i in self.filts]
 
         sample_params = self.gen_mc_obj.get_init_pos(1000)
         for i, p_ in enumerate(sample_params):
-            model_mag = np.array([self.gen_mc_obj.model[f](sample_params[i]).flatten()[0] for f in self.nrc_filts]) + self.gen_mc_obj.dm
+            model_mag = np.array([self.gen_mc_obj.model[f](sample_params[i]).flatten()[0] for f in self.filts]) + self.gen_mc_obj.dm
             base_models[i, :] = model_mag
 
         self.gen_mc_obj.bounds['luminosity'] = [5.8, 6]
         sample_params = self.gen_mc_obj.get_init_pos(1000)
         for i, p_ in enumerate(sample_params):
-            model_mag = np.array([self.gen_mc_obj.model[f](sample_params[i]).flatten()[0] for f in self.nrc_filts]) + self.gen_mc_obj.dm
+            model_mag = np.array([self.gen_mc_obj.model[f](sample_params[i]).flatten()[0] for f in self.filts]) + self.gen_mc_obj.dm
             base_models[i+1000, :] = model_mag
 
         min_model = np.max(base_models[base_models[:, self.trgb[0]] < self.trgb[1]], axis=0)
@@ -221,7 +232,7 @@ class rsg_dataloader(object):
     
     def create_modeldf(self, outpath:Path=None):
         if outpath is None:
-            outpath = self.chimin_modeldir / f'{self.comp}_z{self.z:.2f}_modeldf.csv'
+            outpath = self.chimin_modeldir / f'{self.comp}_z{self.z:.2f}_{self.mode}_modeldf.csv'
         else:
             outpath = Path(outpath)
         outpath.parent.mkdir(parents=True, exist_ok=True)
@@ -231,22 +242,22 @@ class rsg_dataloader(object):
             modeldf = pd.read_csv(outpath)
         # else create a grid at 10 Mpc (needs to be done once)
         else:
-            self.logger.info(f'Creating modeldf for comp={self.comp}, Z={self.z:.2f}: {outpath}')
-            # modeldf = pd.DataFrame(columns = ['Teff', 'Tdust', 'Tau', 'Av'] + list(self.nrc_filts))
+            self.logger.info(f'Creating modeldf for comp={self.comp}, Z={self.z:.2f}, mode={self.mode}: {outpath}')
+            # modeldf = pd.DataFrame(columns = ['Teff', 'Tdust', 'Tau', 'Av'] + list(self.filts))
             nmodel = 1
             for v in self.chimin_params.values():
                 nmodel *= len(v)
 
-            model_ = np.zeros((nmodel, 4 + len(self.nrc_filts)))
+            model_ = np.zeros((nmodel, 4 + len(self.filts)))
             self.gen_mc_obj.reset_bounds()
             param_combos = itertools.product(self.chimin_params['teff_'], self.chimin_params['tdust_'],
                                              self.chimin_params['tau_'], self.chimin_params['Av_'])
             for i, (a1, a2, a3, a4) in enumerate(tqdm(param_combos, total=nmodel, mininterval=10)):
                 pm_ = [a1, a2, a3, 3.0, 3.1, a4]
-                model_mag = np.array([self.gen_mc_obj.model[f](pm_).flatten()[0] for f in self.nrc_filts])
+                model_mag = np.array([self.gen_mc_obj.model[f](pm_).flatten()[0] for f in self.filts])
                 model_[i, :] = ([a1, a2, a3, a4] + list(model_mag))
 
-            modeldf = pd.DataFrame(data=model_, columns=['Teff', 'Tdust', 'Tau', 'Av'] + list(self.nrc_filts))
+            modeldf = pd.DataFrame(data=model_, columns=['Teff', 'Tdust', 'Tau', 'Av'] + list(self.filts))
             modeldf.to_csv(outpath, index=False)
 
         # add distance to galaxy to modeldf
@@ -336,12 +347,12 @@ class rsg_dataloader(object):
         base_rsgcat = self.base_cuts(self.cat, min_det=min_det)
         modeldf = self.create_modeldf(outpath=outpath)
         rsgcat = self.chimin_cuts(base_rsgcat, modeldf)
-        rsgcat.to_csv(self.procdir / f'{self.gal}_{self.comp}_rsgcat.csv')
+        rsgcat.to_csv(self.procdir / f'{self.gal}_{self.comp}_{self.mode}_rsgcat.csv')
         self.rsgcat = rsgcat
 
 class mcmcfit(object):
     def __init__(self, rsg_dataloader: rsg_dataloader, ncores=1, keep_narrow=False, ignore_filts=None, 
-                 modeltype='MARCS', comp='sil', redo_mcmc=False, verbose=False):
+                 modeltype='MARCS', comp='sil', redo_mcmc=False, verbose=False, mode=None):
         if rsg_dataloader.rsgcat is None:
             raise ValueError('Input RSG dataloader should contain rsgcat; Load the catalog into the dataloader using apply_initial_cuts()')
         
@@ -357,9 +368,18 @@ class mcmcfit(object):
         self.ncores = ncores
         self.mcfit_params = np.array(['temperature', 'dust_temp', 'tau_V', 'luminosity', 'Rv', 'Av'])
         self.redo_mcmc = redo_mcmc
+        # the dataloader sets the mode unless it is overridden here
+        self.mode = self.rsgloader.mode if mode is None else mode.lower()
+        if self.mode not in MODE_FILTS:
+            raise ValueError(f'Mode {mode} is not valid - use one of {list(MODE_FILTS.keys())}')
+        if self.mode!=self.rsgloader.mode:
+            self.rsgloader.mode = self.mode
+            self.rsgloader.filts = MODE_FILTS[self.mode]
+            self.rsgloader.wv_all = list(filt_wavelength(self.rsgloader.filts))
+            self.rsgloader.set_cols(self.rsgcat)
 
-        self.mc_obj = mcmc(dm=self.rsgloader.dm, dmerr=self.rsgloader.dmerr, z=self.rsgloader.z, 
-                           model_type=self.modeltype, comp=self.comp)
+        self.mc_obj = mcmc(dm=self.rsgloader.dm, dmerr=self.rsgloader.dmerr, z=self.rsgloader.z,
+                           model_type=self.modeltype, comp=self.comp, mode=self.mode)
         self.mc_obj.verbose=verbose
         if self.rsgloader.backend_dir.exists():
             self.mc_obj.dirs['backends'] = self.rsgloader.backend_dir
@@ -432,15 +452,15 @@ class mcmcfit(object):
         fit_pe = np.array(list(fit_params.values()))
         params = np.meshgrid(*fit_pe[:, 0], indexing='ij', sparse=True)
         model_mag = np.array([self.mc_obj.model[f](params).flatten()[0] for f in phot['inst_filt']]) + self.mc_obj.dm
-        model_mag_plot = np.array([self.mc_obj.model[f](params).flatten()[0] for f in self.rsgloader.nrc_filts]) + self.mc_obj.dm
+        model_mag_plot = np.array([self.mc_obj.model[f](params).flatten()[0] for f in self.rsgloader.filts]) + self.mc_obj.dm
 
         mc_params = np.meshgrid(*min_chi_params, indexing='ij', sparse=True)
         chi_mag = np.array([self.mc_obj.model[f](mc_params).flatten()[0] for f in phot['inst_filt']]) + self.mc_obj.dm
-        chi_mag_plot = np.array([self.mc_obj.model[f](mc_params).flatten()[0] for f in self.rsgloader.nrc_filts]) + self.mc_obj.dm
+        chi_mag_plot = np.array([self.mc_obj.model[f](mc_params).flatten()[0] for f in self.rsgloader.filts]) + self.mc_obj.dm
 
         fig, (ax1, ax2) = plt.subplots(nrows=2, sharex=True, gridspec_kw={'height_ratios': [3, 1]})
         plt.subplots_adjust(hspace=0.1)
-        wv = np.array([float(i[1:4])/100 for i in phot['inst_filt']])
+        wv = filt_wavelength(phot['inst_filt'])
         ax1.errorbar(x=wv, y=phot['mag'], yerr=phot['magerr'], linestyle='none', marker='o', markerfacecolor='cornflowerblue', 
                     markeredgecolor='black', ecolor='cornflowerblue')
         ax1.plot(self.rsgloader.wv_all, model_mag_plot, marker = 's', markerfacecolor = 'None', markeredgecolor = 'royalblue', 
@@ -483,9 +503,12 @@ class mcmcfit(object):
             self.rsgcat.loc[:, [p_+'_mc', p_+'_elow', p_+'_eup', p_+'_best']] = np.nan
         self.rsgcat.loc[:, ['chi_posterior', 'chi_best']] = np.nan
 
+        # matches the backend filename built in mcmc.load_backend
+        mode_suffix = '' if self.mode=='nircam' else '_'+self.mode
         argument_list = []
         for idx_ in self.rsgcat.index:
-            if self.redo_mcmc or not (self.rsgloader.backend_dir / str(self.rsgloader.gal.upper()+'_'+str(int(idx_))+'_'+self.rsgloader.modeltype+'.h5')).exists(): 
+            backfile = self.rsgloader.backend_dir / str(self.rsgloader.gal.upper()+'_'+str(int(idx_))+'_'+self.rsgloader.modeltype+mode_suffix+'.h5')
+            if self.redo_mcmc or not backfile.exists():
                 argument_list.append([self.rsgcat.loc[idx_]])
             else:
                 continue
@@ -503,7 +526,7 @@ class mcmcfit(object):
         for idx_ in self.rsgcat.index:
             self.read_mc_params(self.rsgcat.loc[idx_])
 
-        self.rsgcat.to_csv(self.rsgloader.procdir / f'rsgcat_{self.rsgloader.gal}_MCMC_{self.rsgloader.modeltype}.csv', index=False)
+        self.rsgcat.to_csv(self.rsgloader.procdir / f'rsgcat_{self.rsgloader.gal}_MCMC_{self.rsgloader.modeltype}_{self.rsgloader.mode}.csv', index=False)
     
 if __name__=='__main__':
     parser = create_parser()
@@ -524,7 +547,7 @@ if __name__=='__main__':
         'gal':args.gal, 'procdir':args.procdir, 'photfile_path':args.photfile_path,
         'dm':args.dm, 'dmerr':args.dmerr, 'z':args.z, 'trgb':tuple(args.trgb),
         'modeltype':args.modeltype, 'comp':args.comp, 'keep_narrow':args.keep_narrow, 
-        'ignore_filts':args.ignore_filts, 'rsgcat':rsgcat_in
+        'ignore_filts':args.ignore_filts, 'rsgcat':rsgcat_in, 'mode':args.mode
     }
 
     rsgloader = rsg_dataloader(**load_args)
@@ -536,6 +559,7 @@ if __name__=='__main__':
         rsgloader.apply_initial_cuts(min_det=args.min_det)
 
     if args.mcmc_fit:
-        sedfit = mcmcfit(rsgloader, ncores=args.ncores, verbose=False, 
-                        modeltype=args.modeltype, comp=args.comp, redo_mcmc=args.redo_mcmc)
+        sedfit = mcmcfit(rsgloader, ncores=args.ncores, verbose=False,
+                        modeltype=args.modeltype, comp=args.comp, redo_mcmc=args.redo_mcmc,
+                        mode=args.mode)
         sedfit.run_mcmc_parallel()

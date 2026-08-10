@@ -15,8 +15,30 @@ import pickle
 import random
 from astropy.stats import sigma_clipped_stats as scs
 import time
+import re
 from scipy.stats import truncexpon
 from pathlib import Path
+
+NRC_FILTS = np.array(['F070W','F090W','F115W','F140M','F150W','F150W2','F162M',
+                      'F164N','F182M','F187N','F200W','F210M','F212N','F250M',
+                      'F277W','F300M','F322W2','F323N','F335M','F356W','F360M',
+                      'F405N','F410M','F430M','F444W','F460M','F466N','F470N','F480M'])
+MIRI_FILTS = np.array(['F0560W','F0770W','F1000W','F1130W','F1280W','F1500W',
+                       'F1800W','F2100W','F2550W'])
+# 'miri' fits NIRCam and MIRI photometry together, so it carries both filter sets
+MODE_FILTS = {'nircam': NRC_FILTS,
+              'miri': np.concatenate([NRC_FILTS, MIRI_FILTS])}
+
+def filt_wavelength(filts):
+    '''
+    Pivot wavelength in microns from a JWST filter name.  The digits following
+    the leading F are hundredths of a micron for both NIRCam (F070W -> 0.70,
+    F150W2 -> 1.50) and MIRI (F0560W -> 5.60, F2550W -> 25.50).
+    '''
+    single = isinstance(filts, str)
+    if single: filts = [filts]
+    wv = np.array([float(re.match(r'F(\d+)', f.upper()).group(1))/100 for f in filts])
+    return wv[0] if single else wv
 
 DUST_BB_MASS = 2.4319771e-12
 RSG_V_WIND = 50.0 * u.km/u.s
@@ -25,7 +47,8 @@ d=const.R_sun.to('cm') * 1.0 * u.km/u.s / (const.M_sun.to('g') / (1.0 * u.year) 
 DUST_BB_WIND = d.to(u.Unit(1)).value
 
 class mcmc(object):
-    def __init__(self, model_type='MARCS', ext=None, comp='sil', z=0.00, shell=2, dm=30.0, dmerr=0.5):
+    def __init__(self, model_type='MARCS', ext=None, comp='sil', z=0.00, shell=2, dm=30.0, dmerr=0.5,
+                 mode='nircam'):
         self.bounds = {
             'luminosity': [3.0, 6.0],
             'temperature': [2600.0, 5000.0], 
@@ -37,6 +60,12 @@ class mcmc(object):
 
         self.model_type = model_type
         self.ext = ext
+        self.mode = mode.lower()
+        if self.mode not in MODE_FILTS:
+            raise ValueError(f'Mode {mode} is not valid - use one of {list(MODE_FILTS.keys())}')
+        self.filts = MODE_FILTS[self.mode]
+        self.wv = filt_wavelength(self.filts)
+
         if self.model_type=='MARCS15':
             if z!=0.0:
                 raise ValueError('15Msun MARCS model is only avaiable at Z=0.0')
@@ -63,7 +92,7 @@ class mcmc(object):
         sgn = '+' if z > -1e-5 else '-'
         self.dirs = {
             'bandpass':Path("..") / 'data' / 'bandpass',
-            'model_grid':Path("..") / 'data' / 'interpolate' / f'{self.model_type}_Z{sgn}{np.abs(z):.2f}_{self.comp}.pkl',
+            'model_grid':Path("..") / 'data' / 'interpolate' / self.mode / f'{self.model_type}_Z{sgn}{np.abs(z):.2f}_{self.comp}.pkl',
             'backends':Path("..") / 'data' / 'backends'
         }
         with open(self.dirs['model_grid'], 'rb') as f:
@@ -126,7 +155,9 @@ class mcmc(object):
             newname += str(ord(c))
         newname = str(int(newname)%100207100213100237100267)
 
-        backfile = self.dirs['backends'] / str(objname+'_'+self.model_type+'.h5')
+        # keep the nircam filenames as they were so existing backends stay usable
+        mode_suffix = '' if self.mode=='nircam' else '_'+self.mode
+        backfile = self.dirs['backends'] / str(objname+'_'+self.model_type+mode_suffix+'.h5')
         if self.verbose:
             print('Backend file:',backfile)
             print('Backend name:',newname)
@@ -155,6 +186,11 @@ class mcmc(object):
             phot['mag'] = phot['mag'][~limmask]
             phot['magerr'] = phot['magerr'][~limmask]
             phot['inst_filt'] = phot['inst_filt'][~limmask]
+
+        missing = [f for f in phot['inst_filt'] if f not in self.model]
+        if missing:
+            raise ValueError(f'Filters {missing} are not in the {self.mode} model grid '
+                             f'{self.dirs["model_grid"]}; use mode="miri" to fit MIRI photometry')
         self.phot = phot
 
         if ext is not None:
