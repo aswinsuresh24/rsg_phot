@@ -165,12 +165,17 @@ class mcmc(object):
 
         return backend
 
-    def get_init_pos(self, nwalkers):
+    def get_init_pos(self, nwalkers, seed=None):
         ndim = len(self.model_fit_params)
         init_pos = np.zeros((nwalkers, ndim))
 
-        for i,par in enumerate(self.model_fit_params):
-            init_pos[:,i] = np.random.uniform(self.bounds[par][0], self.bounds[par][1], nwalkers)
+        if seed is None:
+            for i,par in enumerate(self.model_fit_params):
+                init_pos[:,i] = np.random.uniform(self.bounds[par][0], self.bounds[par][1], nwalkers)
+        else:
+            rng = np.random.default_rng(seed)
+            for i,par in enumerate(self.model_fit_params):
+                init_pos[:,i] = rng.uniform(self.bounds[par][0], self.bounds[par][1], nwalkers)
 
         return init_pos
     

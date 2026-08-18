@@ -55,6 +55,7 @@ def create_parser():
 
     return parser
 
+RNG_SEED = 42
 
 class rsg_dataloader(object):
     def __init__(self, gal, procdir:Path, photfile_path=None, dm:float=30.0, dmerr:float=0.5, z:float=0.00, 
@@ -199,13 +200,13 @@ class rsg_dataloader(object):
         base_models = np.zeros((2000, len(self.filts)))
         basedf_cols = [i+'_mag' for i in self.filts]
 
-        sample_params = self.gen_mc_obj.get_init_pos(1000)
+        sample_params = self.gen_mc_obj.get_init_pos(1000, seed=RNG_SEED)
         for i, p_ in enumerate(sample_params):
             model_mag = np.array([self.gen_mc_obj.model[f](sample_params[i]).flatten()[0] for f in self.filts]) + self.gen_mc_obj.dm
             base_models[i, :] = model_mag
 
         self.gen_mc_obj.bounds['luminosity'] = [5.8, 6]
-        sample_params = self.gen_mc_obj.get_init_pos(1000)
+        sample_params = self.gen_mc_obj.get_init_pos(1000, seed=RNG_SEED)
         for i, p_ in enumerate(sample_params):
             model_mag = np.array([self.gen_mc_obj.model[f](sample_params[i]).flatten()[0] for f in self.filts]) + self.gen_mc_obj.dm
             base_models[i+1000, :] = model_mag
@@ -351,13 +352,13 @@ class rsg_dataloader(object):
         base_models = np.zeros((2000, len(self.nrc_filts)))
         basedf_cols = [i+'_mag' for i in self.nrc_filts]
 
-        sample_params = self.gen_mc_obj.get_init_pos(1000)
+        sample_params = self.gen_mc_obj.get_init_pos(1000, seed=RNG_SEED)
         for i, p_ in enumerate(sample_params):
             model_mag = np.array([self.gen_mc_obj.model[f](sample_params[i]).flatten()[0] for f in self.nrc_filts]) + self.gen_mc_obj.dm 
             base_models[i, :] = model_mag
 
         self.gen_mc_obj.bounds['luminosity'] = [5.8, 6]
-        sample_params = self.gen_mc_obj.get_init_pos(1000)
+        sample_params = self.gen_mc_obj.get_init_pos(1000, seed=RNG_SEED)
         for i, p_ in enumerate(sample_params):
             model_mag = np.array([self.gen_mc_obj.model[f](sample_params[i]).flatten()[0] for f in self.nrc_filts]) + self.gen_mc_obj.dm 
             base_models[i+1000, :] = model_mag
