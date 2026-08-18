@@ -224,7 +224,9 @@ class rsg_dataloader(object):
         difm = (mindf < 0).all(axis=1) & (maxdf > 0).all(axis=1)
         ndet = (cat_mags > 10) & (cat_mags < 38) 
         ndetm = detmask(ndet, min_det=min_det)
+        self.logger.info(f'{ndetm.sum()} objects after n>4 cut')
         base_mask = difm & ndetm 
+        self.logger.info(f'{base_mask.sum()} objects after minmax cut')
         rsgcat = cat[base_mask].replace(np.nan, 99.999)
         self.logger.info(f'RSG catalog contains {len(rsgcat)} objects after ndet cuts')
 
@@ -342,6 +344,44 @@ class rsg_dataloader(object):
         plt.grid(alpha=0.3, which='both', linestyle='--')
         plt.tight_layout()
         plt.show()
+
+    def plot_basecut(self):
+        self.gen_mc_obj.bounds['luminosity'] = [3.5, 3.6]
+
+        base_models = np.zeros((2000, len(self.nrc_filts)))
+        basedf_cols = [i+'_mag' for i in self.nrc_filts]
+
+        sample_params = self.gen_mc_obj.get_init_pos(1000)
+        for i, p_ in enumerate(sample_params):
+            model_mag = np.array([self.gen_mc_obj.model[f](sample_params[i]).flatten()[0] for f in self.nrc_filts]) + self.gen_mc_obj.dm 
+            base_models[i, :] = model_mag
+
+        self.gen_mc_obj.bounds['luminosity'] = [5.8, 6]
+        sample_params = self.gen_mc_obj.get_init_pos(1000)
+        for i, p_ in enumerate(sample_params):
+            model_mag = np.array([self.gen_mc_obj.model[f](sample_params[i]).flatten()[0] for f in self.nrc_filts]) + self.gen_mc_obj.dm 
+            base_models[i+1000, :] = model_mag
+
+        min_model = np.max(base_models[base_models[:, self.trgb[0]] < self.trgb[1]], axis=0)
+        min_model_df = pd.DataFrame([dict(zip(basedf_cols, min_model))])
+
+        max_model = np.min(base_models[base_models[:, self.trgb[0]] < self.trgb[1]], axis=0)
+        max_model_df = pd.DataFrame([dict(zip(basedf_cols, max_model))])
+
+        random_sed = self.cat[self.cols['magcols']].replace(99.999, np.nan).sample(10000)
+        for idx in random_sed.index:
+            nanmask = np.isnan(random_sed.loc[idx].values)
+            plt.plot(self.cols['cat_wv'][~nanmask], random_sed.loc[idx].values[~nanmask], color='gray', alpha=0.01)
+        plt.scatter(self.wv_all[self.trgb[0]], self.trgb[1], marker='*', color='crimson', s=50, ec='black')
+
+        plt.plot(self.wv_all, min_model)
+        plt.plot(self.wv_all, max_model)
+        plt.gca().invert_yaxis()
+        plt.show()
+
+        self.gen_mc_obj.reset_bounds()
+
+        return min_model
     
     def apply_initial_cuts(self, outpath=None, min_det=4):
         base_rsgcat = self.base_cuts(self.cat, min_det=min_det)
