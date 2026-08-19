@@ -985,8 +985,8 @@ class sbifit(object):
                           'ini_chi2' : 5,       # chi^2 cut usedi in the nearest neighbor search
                           'max_chi2' : 500,     # the maximum chi^2 to reach in case we incremently 
                                               # increase the chi^2 in the case of insufficient neighbors
-                          'tmax_per_obj' : 10, # max time spent on one object / mc sample in secs
-                          'tmax_all' : 1,      # max time spent on all mc samples in mins
+                          'tmax_per_obj' : 0.3, # max time spent on one object / mc sample in secs (10 by default)
+                          'tmax_all' : 0.1,      # max time spent on all mc samples in mins (1 by default)
                           'verbose' : False,
                          }
 
@@ -1061,7 +1061,14 @@ class sbifit(object):
                 self.logger.info(traceback.format_exc())
                 continue
 
-        sbicat.to_csv(self.procdir.parent / f'{self.rsgloader.gal}_sbi_cat.csv', index=False)
+        outfile = self.procdir.parent / f'{self.rsgloader.gal}_sbi_cat.csv'
+        if outfile.exists():
+            self.logger.info(f'WARNING: Output file {outfile} already exists. Writing new file.')
+            nfiles = self.procdir.parent.glob(f'{self.rsgloader.gal}_sbi_cat_*.csv')
+            outfile = outfile.replace('.csv', f'_{len(list(nfiles))}.csv')
+            sbicat.to_csv(outfile, index=False)
+        else:
+            sbicat.to_csv(self.procdir.parent / f'{self.rsgloader.gal}_sbi_cat.csv', index=False)
 
 if __name__ == '__main__':
     parser = create_parser()
