@@ -985,8 +985,8 @@ class sbifit(object):
                           'ini_chi2' : 5,       # chi^2 cut usedi in the nearest neighbor search
                           'max_chi2' : 500,     # the maximum chi^2 to reach in case we incremently 
                                               # increase the chi^2 in the case of insufficient neighbors
-                          'tmax_per_obj' : 0.3, # max time spent on one object / mc sample in secs (10 by default)
-                          'tmax_all' : 0.1,      # max time spent on all mc samples in mins (1 by default)
+                          'tmax_per_obj' : 1, # max time spent on one object / mc sample in secs (10 by default)
+                          'tmax_all' : 1,      # max time spent on all mc samples in mins (1 by default)
                           'verbose' : False,
                          }
 
@@ -1086,8 +1086,9 @@ if __name__ == '__main__':
 
     if args.rsgcat is not None:
         rsgcat_in = pd.read_csv(args.rsgcat)
-        if any(rsgcat_in['lum_chisq'] > 100.0):
-            rsgcat_in['lum_chisq'] = np.log10(rsgcat_in['lum_chisq'])
+        # revert this for later
+        # if any(rsgcat_in['lum_chisq'] > 100.0):
+        #     rsgcat_in['lum_chisq'] = np.log10(rsgcat_in['lum_chisq'])
     else: rsgcat_in = None
 
     load_args = {
