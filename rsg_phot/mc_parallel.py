@@ -185,12 +185,16 @@ class rsg_dataloader(object):
 
     def base_cuts(self, cat, min_det=4):
         def detmask(cat_mags_det, min_det=4):
-            opt_dets = cat_mags_det[cat_mags_det.columns[(self.cols['cat_wv'][self.flt_mask] < 1.2)]]
-            nir_dets = cat_mags_det[cat_mags_det.columns[(self.cols['cat_wv'][self.flt_mask] < 2.6)]]
+            if (np.min(self.cols['cat_wv'][self.flt_mask]) < 1.2):
+                opt_cut = 1.2
+            else:
+                opt_cut = 1.6
+            opt_dets = cat_mags_det[cat_mags_det.columns[(self.cols['cat_wv'][self.flt_mask] < opt_cut)]]
+            nir_dets = cat_mags_det[cat_mags_det.columns[(self.cols['cat_wv'][self.flt_mask] > opt_cut) & (self.cols['cat_wv'][self.flt_mask] < 2.6)]]
             mir_dets = cat_mags_det[cat_mags_det.columns[(self.cols['cat_wv'][self.flt_mask] > 2.6)]]
 
             ndetm = cat_mags_det.sum(axis=1) >= min_det
-            detm = (nir_dets.sum(axis=1) > 0) & (mir_dets.sum(axis=1) > 0) & ndetm
+            detm = (opt_dets.sum(axis=1) > 0) & (nir_dets.sum(axis=1) > 0) & (mir_dets.sum(axis=1) > 0) & ndetm
 
             return detm
         
@@ -312,10 +316,10 @@ class rsg_dataloader(object):
 
         chi_cut = np.percentile(base_rsgcat['chimin'], 90)
         mask = base_rsgcat['chimin'] < chi_cut
+        base_rsgcat.loc[:, 'chimin_pass'] = mask
 
-        rsgcat = base_rsgcat[mask]
-        self.logger.info(f'RSG catalog contains {len(rsgcat)} objects after chisq cuts')
-        return rsgcat
+        self.logger.info(f'RSG catalog contains {len(base_rsgcat)} objects after chisq cuts')
+        return base_rsgcat
     
     def plot_error_dist(self, cat=None):
         if cat is None:
