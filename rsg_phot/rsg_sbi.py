@@ -1065,7 +1065,7 @@ class sbifit(object):
         if outfile.exists():
             self.logger.info(f'WARNING: Output file {outfile} already exists. Writing new file.')
             nfiles = self.procdir.parent.glob(f'{self.rsgloader.gal}_sbi_cat_*.csv')
-            outfile = outfile.replace('.csv', f'_{len(list(nfiles))}.csv')
+            outfile = outfile.with_stem(outfile.stem + f'_{len(list(nfiles))}') 
             sbicat.to_csv(outfile, index=False)
         else:
             sbicat.to_csv(self.procdir.parent / f'{self.rsgloader.gal}_sbi_cat.csv', index=False)
