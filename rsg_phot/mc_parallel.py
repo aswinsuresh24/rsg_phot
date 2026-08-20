@@ -195,7 +195,7 @@ class rsg_dataloader(object):
             return detm
         
         self.logger.info(f'Applying ndet cuts')
-        self.gen_mc_obj.bounds['luminosity'] = [4.0, 4.1]
+        self.gen_mc_obj.bounds['luminosity'] = [3.5, 3.6]
 
         base_models = np.zeros((2000, len(self.filts)))
         basedf_cols = [i+'_mag' for i in self.filts]
