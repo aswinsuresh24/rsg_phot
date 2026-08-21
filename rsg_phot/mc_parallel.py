@@ -183,23 +183,29 @@ class rsg_dataloader(object):
         failed = init_failed
         success_files = init_success_cols
 
-    def base_cuts(self, cat, min_det=4):
+    def base_cuts(self, cat, min_det=4, apply_opt_cut=False):
         def detmask(cat_mags_det, min_det=4):
             if (np.min(self.cols['cat_wv'][self.flt_mask]) < 1.2):
                 opt_cut = 1.2
             else:
                 opt_cut = 1.6
             opt_dets = cat_mags_det[cat_mags_det.columns[(self.cols['cat_wv'][self.flt_mask] < opt_cut)]]
-            nir_dets = cat_mags_det[cat_mags_det.columns[(self.cols['cat_wv'][self.flt_mask] > opt_cut) & (self.cols['cat_wv'][self.flt_mask] < 2.6)]]
+            if apply_opt_cut:
+                nir_dets = cat_mags_det[cat_mags_det.columns[(self.cols['cat_wv'][self.flt_mask] > opt_cut) & (self.cols['cat_wv'][self.flt_mask] < 2.6)]]
+            else:
+                nir_dets = cat_mags_det[cat_mags_det.columns[(self.cols['cat_wv'][self.flt_mask] < 2.6)]]
             mir_dets = cat_mags_det[cat_mags_det.columns[(self.cols['cat_wv'][self.flt_mask] > 2.6)]]
 
             ndetm = cat_mags_det.sum(axis=1) >= min_det
-            detm = (opt_dets.sum(axis=1) > 0) & (nir_dets.sum(axis=1) > 0) & (mir_dets.sum(axis=1) > 0) & ndetm
+            if apply_opt_cut:
+                detm = (opt_dets.sum(axis=1) > 0) & (nir_dets.sum(axis=1) > 0) & (mir_dets.sum(axis=1) > 0) & ndetm
+            else:
+                detm = (nir_dets.sum(axis=1) > 0) & (mir_dets.sum(axis=1) > 0) & ndetm
 
             return detm
         
         self.logger.info(f'Applying ndet cuts')
-        self.gen_mc_obj.bounds['luminosity'] = [3.5, 3.6]
+        self.gen_mc_obj.bounds['luminosity'] = [4.0, 4.1]
 
         base_models = np.zeros((2000, len(self.filts)))
         basedf_cols = [i+'_mag' for i in self.filts]
@@ -318,7 +324,7 @@ class rsg_dataloader(object):
         mask = base_rsgcat['chimin'] < chi_cut
         base_rsgcat.loc[:, 'chimin_pass'] = mask
 
-        self.logger.info(f'RSG catalog contains {len(base_rsgcat)} objects after chisq cuts')
+        self.logger.info(f"RSG catalog contains {base_rsgcat['chimin_pass'].sum()} objects after chisq cuts")
         return base_rsgcat
     
     def plot_error_dist(self, cat=None):
