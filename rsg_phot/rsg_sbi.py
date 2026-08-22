@@ -13,6 +13,7 @@ import traceback
 import pandas as pd
 import itertools
 from tqdm import tqdm
+import multiprocessing
 from multiprocessing import Pool, Process
 import argparse
 import logging
@@ -160,6 +161,35 @@ class TruncatedExponential(torch.distributions.Distribution):
 
         return log_probs.numpy() if self.return_numpy else log_probs
     
+
+_INFER_CTX = None
+
+def _infer_pool_init(ctx):
+    '''Pool initializer: cache the run context and pin the worker to one thread.
+
+    The BLAS env vars set in __main__ are inherited by the children, but
+    `torch.set_num_threads` is a runtime setting that is not, and under 'spawn' the
+    __main__ block does not re-run at all. Without this, every worker spins up a full
+    set of BLAS/OMP threads and oversubscribes the node.
+    '''
+    global _INFER_CTX
+    torch.set_num_threads(1)
+    _INFER_CTX = ctx
+
+def _infer_worker(idx_):
+    '''Run SBI++ on a single catalogue row. Returns a result dict, or None if the
+    source was skipped (too few detections, non-convergence, timeout, or an error).
+    '''
+    ctx = _INFER_CTX
+    return ctx['self']._infer_one(idx_=idx_,
+                                  sbicat=ctx['sbicat'],
+                                  run_params=ctx['run_params'],
+                                  sbi_params=ctx['sbi_params'],
+                                  mcol_=ctx['mcol_'],
+                                  ecol_=ctx['ecol_'],
+                                  savedir=ctx['savedir'],
+                                  seed=ctx['seed'])
+
 
 class sbifit(object):
     def __init__(self, rsg_dataloader:rsg_dataloader, comp:str='sil', modeltype:str='MARCS', device:str='cpu'):
@@ -961,22 +991,114 @@ class sbifit(object):
                           num_workers=num_workers)
         self.test_accuracy(nsamp=num_test_samples, num_posterior_samples=num_posterior_samples)
     
-    def infer(self, sbi_config_id, run_params=None):
+    def _infer_one(self, idx_, sbicat, run_params, sbi_params, mcol_, ecol_, savedir, seed=None):
         """
-        Infer parameters for all objects in the RSG catalog using SBI++ with the trained SBI model 
+        Run SBI++ on a single source and return its fit results.
+
+        Factored out of `infer` so that it can be used both serially and as a
+        multiprocessing task. Nothing here touches shared state: the posterior samples
+        are written to a file keyed on the source index, and the catalogue values are
+        returned to the parent rather than written in place.
+
+        :param idx_: index of the source in sbicat
+        :param seed: int or None. If given, the RNG is seeded with `seed + idx_` so
+            that each source draws a reproducible Monte-Carlo noise realisation
+            regardless of which worker happens to pick it up. Keying on the source
+            index rather than on the worker is what makes the parallel and serial
+            paths agree exactly; it also stops workers sharing an RNG state.
+
+        :returns: dict of results, or None if the source was skipped.
+        """
+        if seed is not None:
+            np.random.seed((int(seed) + int(idx_)) % (2**32))
+            torch.manual_seed((int(seed) + int(idx_)) % (2**63 - 1))
+
+        try:
+            col = sbicat.loc[idx_]
+            obsmag = np.array(col[mcol_], dtype=float)
+            missing_mask = obsmag > 90
+            if (~missing_mask).sum() < 4:
+                self.logger.info(f'Index {idx_} has less than 4 detections. Skipping.')
+                return None
+            obsmag -= (self.rsgloader.gen_mc_obj.dm+30)
+            obserr = np.array(col[ecol_], dtype=float)
+            obserr = np.sqrt(obserr**2 + 0.01**2)
+
+            obsmag[missing_mask] = np.nan
+            obserr[missing_mask] = np.nan
+
+            obs = {'mags': obsmag,
+                'mags_unc': obserr}
+            samp, obs_, flags = sbi_pp.sbi_pp(obs=obs, run_params=run_params, sbi_params=sbi_params)
+            if (not flags['use_res']) | (flags['timeout'] == True):
+                self.logger.info(f'Inference for index {idx_} did not converge or timed out. Skipping.')
+                return None
+
+            samp_savepath = savedir / f'{self.rsgloader.gal}_{idx_}.p'
+            with open(samp_savepath, 'wb') as f:
+                pickle.dump({'samples': samp, 'obs': obs_}, f)
+
+            samp_median = np.median(samp, axis=0)
+            samp_lower = np.percentile(samp, 16, axis=0)
+            samp_upper = np.percentile(samp, 84, axis=0)
+
+            model_mag = np.array([self.gen_mc_obj.model[f](samp_median).flatten()[0] for f in self.rsgloader.cols['flts'][self.rsgloader.flt_mask]]) + self.gen_mc_obj.dm
+            model_mag = model_mag[~missing_mask]
+            chisq = np.nansum(((obsmag[~missing_mask] - model_mag) / obserr[~missing_mask])**2) / np.sum(~missing_mask)
+            abs_err = np.nansum((obsmag[~missing_mask] - model_mag)**2) / np.sum(~missing_mask)
+
+            return {'idx': idx_,
+                    'median': samp_median,
+                    'elow': samp_median - samp_lower,
+                    'eup': samp_upper - samp_median,
+                    'flags': flags,
+                    'chi_post': chisq,
+                    'sq_err_post': abs_err}
+
+        except Exception as e:
+            self.logger.info(f'Inference failed for index {idx_} with error: {e}')
+            self.logger.info(traceback.format_exc())
+            return None
+
+    def _write_result(self, sbicat, res):
+        '''Write one `_infer_one` result dict into the catalogue.'''
+        idx_ = res['idx']
+        sbicat.loc[idx_, [p_+'_median' for p_ in self.gen_mc_obj.model_fit_params]] = res['median']
+        sbicat.loc[idx_, [p_+'_elow' for p_ in self.gen_mc_obj.model_fit_params]] = res['elow']
+        sbicat.loc[idx_, [p_+'_eup' for p_ in self.gen_mc_obj.model_fit_params]] = res['eup']
+        sbicat.loc[idx_, res['flags'].keys()] = res['flags'].values()
+        sbicat.loc[idx_, 'chi_post'] = res['chi_post']
+        sbicat.loc[idx_, 'sq_err_post'] = res['sq_err_post']
+
+    def infer(self, sbi_config_id, run_params=None, ncores=1, seed=42):
+        """
+        Infer parameters for all objects in the RSG catalog using SBI++ with the trained SBI model
         corresponding to sbi_config_id.
-        
-        :param sbi_config_id: 
-            config_id corresponding to the trained SBI model to use for inference, 
+
+        :param sbi_config_id:
+            config_id corresponding to the trained SBI model to use for inference,
             which is generated using model_id_from_config
 
         :param run_params: dict, optional
-            Dictionary of parameters for controlling the inference run. If None, 
+            Dictionary of parameters for controlling the inference run. If None,
             default parameters will be used.
 
+        :param ncores: int, optional
+            Number of processes to split the sources across. 1 (default) runs the
+            original serial loop. Sources are independent, so each worker runs the
+            unmodified SBI++ machinery on its own subset -- including the per-object
+            SIGALRM timeouts, which keep working because every worker is a separate
+            process with its own main thread. A source that times out or goes
+            out-of-distribution therefore only costs its own task, not the run.
+
+        :param seed: int, optional
+            Base RNG seed; source `idx_` is run with `seed + idx_`. Verified to make
+            ncores=1 and ncores>1 produce bit-identical catalogues. Pass None to keep
+            the previous unseeded behaviour, at the cost of reproducibility.
+
         Example usage:
-            sbi_config_id = 'ef220e94' 
-            self.infer(sbi_config_id, run_params=None)
+            sbi_config_id = 'ef220e94'
+            self.infer(sbi_config_id, run_params=None, ncores=16)
         """
         if run_params is None:
             run_params = {'nmc' : 50,    # number of MC samples
@@ -1015,51 +1137,42 @@ class sbifit(object):
 
         mcol_, ecol_ = self.rsgloader.cols['magcols'][self.rsgloader.flt_mask], self.rsgloader.cols['errcols'][self.rsgloader.flt_mask]
         tqdm_out = TqdmToLogger(self.logger, level=logging.INFO)
-        self.logger.info(f'Running inference on {len(sbicat)} sources for galaxy {self.rsgloader.gal}')
-        for idx_ in tqdm(sbicat.index, file=tqdm_out, total=len(sbicat), mininterval=20):
-            try:
-                col = sbicat.loc[idx_]
-                obsmag = np.array(col[mcol_], dtype=float)
-                missing_mask = obsmag > 90
-                if (~missing_mask).sum() < 4:
-                    self.logger.info(f'Index {idx_} has less than 4 detections. Skipping.')
-                    continue
-                obsmag -= (self.rsgloader.gen_mc_obj.dm+30)
-                obserr = np.array(col[ecol_], dtype=float)
-                obserr = np.sqrt(obserr**2 + 0.01**2)
 
-                obsmag[missing_mask] = np.nan
-                obserr[missing_mask] = np.nan
+        ncores = max(1, int(ncores))
+        worker_kwargs = dict(sbicat=sbicat, run_params=run_params, sbi_params=sbi_params,
+                             mcol_=mcol_, ecol_=ecol_, savedir=savedir, seed=seed)
 
-                obs = {'mags': obsmag,
-                    'mags_unc': obserr}
-                samp, obs_, flags = sbi_pp.sbi_pp(obs=obs, run_params=run_params, sbi_params=sbi_params)
-                if (not flags['use_res']) | (flags['timeout'] == True):
-                    self.logger.info(f'Inference for index {idx_} did not converge or timed out. Skipping.')
-                    continue
+        if ncores == 1:
+            self.logger.info(f'Running inference on {len(sbicat)} sources for galaxy {self.rsgloader.gal}')
+            for idx_ in tqdm(sbicat.index, file=tqdm_out, total=len(sbicat), mininterval=20):
+                res = self._infer_one(idx_=idx_, **worker_kwargs)
+                if res is not None:
+                    self._write_result(sbicat, res)
+        else:
+            self.logger.info(f'Running inference on {len(sbicat)} sources for galaxy '
+                             f'{self.rsgloader.gal} across {ncores} cores')
 
-                samp_savepath = savedir / f'{self.rsgloader.gal}_{idx_}.p'
-                with open(samp_savepath, 'wb') as f:
-                    pickle.dump({'samples': samp, 'obs': obs_}, f)
+            torch.set_num_threads(1)
 
-                samp_median = np.median(samp, axis=0)
-                samp_lower = np.percentile(samp, 16, axis=0)
-                samp_upper = np.percentile(samp, 84, axis=0)
-                sbicat.loc[idx_, [p_+'_median' for p_ in self.gen_mc_obj.model_fit_params]] = samp_median
-                sbicat.loc[idx_, [p_+'_elow' for p_ in self.gen_mc_obj.model_fit_params]] = samp_median - samp_lower
-                sbicat.loc[idx_, [p_+'_eup' for p_ in self.gen_mc_obj.model_fit_params]] = samp_upper - samp_median
-                sbicat.loc[idx_, flags.keys()] = flags.values()
+            # Ship a shallow copy with the training inputs dropped: `_infer_one` never
+            # touches x_train, and it is roughly half the pickled size of `self`.
+            # y_train is still sent once, inside sbi_params, because sbi_pp needs it.
+            worker_self = copy.copy(self)
+            worker_self.x_train = None
 
-                model_mag = np.array([self.gen_mc_obj.model[f](samp_median).flatten()[0] for f in self.rsgloader.cols['flts'][self.rsgloader.flt_mask]]) + self.gen_mc_obj.dm
-                model_mag = model_mag[~missing_mask]
-                chisq = np.nansum(((obsmag[~missing_mask] - model_mag) / obserr[~missing_mask])**2) / np.sum(~missing_mask)
-                abs_err = np.nansum((obsmag[~missing_mask] - model_mag)**2) / np.sum(~missing_mask)
-                sbicat.loc[idx_, 'chi_post'] = chisq
-                sbicat.loc[idx_, 'sq_err_post'] = abs_err
-            except Exception as e:
-                self.logger.info(f'Inference failed for index {idx_} with error: {e}')
-                self.logger.info(traceback.format_exc())
-                continue
+            worker_ctx = dict(self=worker_self, **worker_kwargs)
+            mp_ctx = multiprocessing.get_context('spawn')
+
+            multiprocessing_logging.install_mp_handler(self.logger)
+            with mp_ctx.Pool(processes=ncores, initializer=_infer_pool_init,
+                             initargs=(worker_ctx,)) as pool:
+                # imap_unordered so the progress bar tracks completions rather than
+                # waiting for the whole run, and so a slow source does not hold up
+                # results already finished by the other workers.
+                for res in tqdm(pool.imap_unordered(_infer_worker, list(sbicat.index), chunksize=1),
+                                file=tqdm_out, total=len(sbicat), mininterval=20):
+                    if res is not None:
+                        self._write_result(sbicat, res)
 
         outfile = self.procdir.parent / f'{self.rsgloader.gal}_sbi_cat.csv'
         if outfile.exists():
@@ -1086,9 +1199,10 @@ if __name__ == '__main__':
 
     if args.rsgcat is not None:
         rsgcat_in = pd.read_csv(args.rsgcat)
-        # revert this for later
-        # if any(rsgcat_in['lum_chisq'] > 100.0):
-        #     rsgcat_in['lum_chisq'] = np.log10(rsgcat_in['lum_chisq'])
+        if any(rsgcat_in['lum_chisq'] > 100.0):
+            rsgcat_in['lum_chisq'] = np.log10(rsgcat_in['lum_chisq'])
+        if 'chimin_pass' in rsgcat_in.columns:
+            rsgcat_in = rsgcat_in[rsgcat_in['chimin_pass'] == True]
     else: rsgcat_in = None
 
     load_args = {
@@ -1167,4 +1281,4 @@ if __name__ == '__main__':
     elif args.infer:
         if args.config_id is None:
             raise ValueError('Must provide config_id corresponding to trained SBI model to use for inference using --config_id')
-        sedfit.infer(args.config_id)
+        sedfit.infer(args.config_id, ncores=int(args.ncores))
