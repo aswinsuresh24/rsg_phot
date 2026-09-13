@@ -48,7 +48,7 @@ ALL_CONFIGS = {
                 'sbicat_path': Path('../data/dolphot/ngc5236/ngc5236_sbi_cat.csv'),
                 'rsg_color': 0.4, 'dm': 0.4,
                 'z_true': 0.74, 'z_err': 0.01, 
-                'sfr': 0.62, 'sfr_err': 0.20,
+                'sfr': 0.62, 'sfr_err': 0.20, 'A': 306.58,
                 'logm': 10.41, 'logm_err': 0.1},
     'ngc5194': {'rsgcat': Path('../data/dolphot/ngc5194/ngc5194_sil_rsgcat.csv'),
                 'load_args': {'gal':'ngc5194',
@@ -61,7 +61,7 @@ ALL_CONFIGS = {
                 'sbicat_path': Path('../data/dolphot/ngc5194/ngc5194_sbi_cat.csv'),
                 'rsg_color': 0.4, 'dm': 0.5,
                 'z_true': 0.93, 'z_err': 0.21,
-                'sfr': 0.65, 'sfr_err': 0.20,
+                'sfr': 0.65, 'sfr_err': 0.20, 'A': 490.39,
                 'logm': 10.73, 'logm_err': 0.1},
     'ngc4258': {'rsgcat': Path('../data/dolphot/ngc4258/ngc4258_sil_rsgcat.csv'),
                 'load_args': {'gal':'ngc4258',
@@ -74,7 +74,7 @@ ALL_CONFIGS = {
                 'sbicat_path': Path('../data/dolphot/ngc4258/ngc4258_sbi_cat.csv'),
                 'rsg_color': 0.2, 'dm': 0.5,
                 'z_true': 0.63, 'z_err': 0.13,
-                'sfr': -0.03, 'sfr_err': 0.20,
+                'sfr': -0.03, 'sfr_err': 0.20, 'A': 1205.99,
                 'logm': 10.67, 'logm_err': 0.1},
     'ngc628': {'rsgcat': Path('../data/dolphot/ngc628/ngc628_sil_rsgcat.csv'),
                'load_args': {'gal':'ngc628',
@@ -87,7 +87,7 @@ ALL_CONFIGS = {
                'sbicat_path': Path('../data/dolphot/ngc628/ngc628_sbi_cat.csv'),
                'rsg_color': 0.4, 'dm': 0.5,
                'z_true': 0.62, 'z_err': 0.01,
-               'sfr': 0.23, 'sfr_err': 0.20,
+               'sfr': 0.23, 'sfr_err': 0.20, 'A': 600.54,
                'logm': 10.24, 'logm_err': 0.1}, 
     'ngc5643': {'rsgcat': Path('../data/dolphot/ngc5643/ngc5643_sil_rsgcat.csv'),
                 'load_args': {'gal':'ngc5643',
@@ -100,7 +100,7 @@ ALL_CONFIGS = {
                 'sbicat_path': Path('../data/dolphot/ngc5643/ngc5643_sbi_cat.csv'),
                 'rsg_color': 0.4, 'dm': 0.5,
                 'z_true': 0.62, 'z_err': 0.01,
-                'sfr': 0.33, 'sfr_err': 0.20,
+                'sfr': 0.33, 'sfr_err': 0.20, 'A': 295.49,
                 'logm': 10.06, 'logm_err': 0.1}, 
     'ngc7320': {'rsgcat': Path('../data/dolphot/ngc7320/ngc7320_sil_rsgcat.csv'),
                 'load_args': {'gal':'ngc7320',
@@ -113,7 +113,7 @@ ALL_CONFIGS = {
                 'sbicat_path': Path('../data/dolphot/ngc7320/ngc7320_sbi_cat.csv'),
                 'rsg_color': 0.9, 'dm': 0.5,
                 'z_true': 0.49, 'z_err': 0.11,
-                'sfr': -0.94, 'sfr_err': 0.2,
+                'sfr': -0.94, 'sfr_err': 0.2, 'A': 19.52,
                 'logm': 9.24, 'logm_err': 0.1},
     'ngc1367': {'rsgcat': Path('../data/dolphot/ngc1367/ngc1367_sil_rsgcat.csv'),
                 'load_args': {'gal':'ngc1367',
@@ -126,7 +126,7 @@ ALL_CONFIGS = {
                 'sbicat_path': Path('../data/dolphot/ngc1367/ngc1367_sbi_cat.csv'),
                 'rsg_color': -0.06, 'dm': 0.5,
                 'z_true': 0.78, 'z_err': 0.15,
-                'sfr': -0.37, 'sfr_err': 0.20,
+                'sfr': -0.37, 'sfr_err': 0.20, 'A': 96.06,
                 'logm': 9.51, 'logm_err': 0.10}, # minweight 0.1
     'ngc1365': {'rsgcat': Path('../data/dolphot/ngc1365/ngc1365_sil_rsgcat.csv'),
                 'load_args': {'gal':'ngc1365',
@@ -139,7 +139,7 @@ ALL_CONFIGS = {
                 'sbicat_path': Path('../data/dolphot/ngc1365/ngc1365_sbi_cat.csv'),
                 'rsg_color': 0.4, 'dm': 0.5,
                 'z_true': 0.73, 'z_err': 0.02,
-                'sfr': 1.15, 'sfr_err': 0.20,
+                'sfr': 1.15, 'sfr_err': 0.20, 'A': 2503.47,
                 'logm': 10.75, 'logm_err': 0.1},
     'ngc4536': {'rsgcat': Path('../data/dolphot/ngc4536/ngc4536_sil_rsgcat.csv'),
                 'load_args': {'gal':'ngc4536',
@@ -152,7 +152,7 @@ ALL_CONFIGS = {
                 'sbicat_path': Path('../data/dolphot/ngc4536/ngc4536_sbi_cat.csv'),
                 'rsg_color': 0.0, 'dm': 0.5,
                 'z_true': 0.62, 'z_err': 0.13,
-                'sfr': 0.47, 'sfr_err': 0.20,
+                'sfr': 0.47, 'sfr_err': 0.20, 'A': 908.95,
                 'logm': 10.19, 'logm_err': 0.1},
     'ngc5457': {'rsgcat': Path('../data/dolphot/ngc5457/ngc5457_sil_rsgcat.csv'),
                 'load_args': {'gal':'ngc5457',
@@ -165,7 +165,7 @@ ALL_CONFIGS = {
                 'sbicat_path': Path('../data/dolphot/ngc5457/ngc5457_sbi_cat.csv'),
                 'rsg_color': 0.4, 'dm': 0.5,
                 'z_true': 0.55, 'z_err': 0.01,
-                'sfr': 0.54, 'sfr_err': 0.20,
+                'sfr': 0.54, 'sfr_err': 0.20, 'A': 1350.65,
                 'logm': 10.39, 'logm_err': 0.1},
     'ngc4449': {'rsgcat': os.path.join(os.pardir, 'data/dolphot/ngc4449/ngc4449_sil_rsgcat.csv'),
                 'load_args': {'gal':'ngc4449', 'procdir':os.path.join(os.pardir, 'data/dolphot/ngc4449'), 'photfile_path':None,
@@ -176,7 +176,7 @@ ALL_CONFIGS = {
                 'model': "2ed03571",
                 'rsg_color': 0.3, 'dm': 0.3,
                 'z_true': 0.34, 'z_err': 0.03,
-                'sfr': -0.37, 'sfr_err': 0.20,
+                'sfr': -0.37, 'sfr_err': 0.20, 'A': 29.55,
                 'logm':9.03, 'logm_err':0.10}, # single seed selection iteration (skip trend removal) 
     'ngc4485': {'rsgcat': os.path.join(os.pardir, 'data/dolphot/ngc4485/ngc4485_sil_rsgcat.csv'),
                 'load_args': {'gal':'ngc4485', 'procdir':os.path.join(os.pardir, 'data/dolphot/ngc4485'), 'photfile_path':None,
@@ -187,7 +187,7 @@ ALL_CONFIGS = {
                 'model': "41d94035",
                 'rsg_color': 0.3, 'dm': 0.5,
                 'z_true': 0.25, 'z_err': 0.03,
-                'sfr': 0.23, 'sfr_err': 0.20,
+                'sfr': 0.23, 'sfr_err': 0.20, 'A': 224.15,
                 'logm':9.73, 'logm_err':0.10},
     'ngc4548': {'rsgcat': os.path.join(os.pardir, 'data/dolphot/ngc4548/ngc4548_sil_rsgcat.csv'),
                 'load_args': {'gal':'ngc4548', 'procdir':os.path.join(os.pardir, 'data/dolphot/ngc4548'), 'photfile_path':None,
@@ -198,7 +198,7 @@ ALL_CONFIGS = {
                 'sbicat_path': Path('../data/dolphot/ngc4548/ngc4548_sbi_cat.csv'),
                 'rsg_color': 0.0, 'dm': 0.5,
                 'z_true': 1.45, 'z_err': 0.5,
-                'sfr': -0.28, 'sfr_err': 0.20,
+                'sfr': -0.28, 'sfr_err': 0.20, 'A': 206.32,
                 'logm': 10.65, 'logm_err': 0.1}, 
     'ngc4038': {'rsgcat': os.path.join(os.pardir, 'data/dolphot/ngc4038/ngc4038_sil_rsgcat.csv'),
                 'load_args': {'gal':'ngc4038', 'procdir':os.path.join(os.pardir, 'data/dolphot/ngc4038'), 'photfile_path':None,
@@ -209,7 +209,7 @@ ALL_CONFIGS = {
                 'sbicat_path': Path('../data/dolphot/ngc4038/ngc4038_sbi_cat.csv'),
                 'rsg_color': 0.0, 'dm': 0.5,
                 'z_true': 1.02, 'z_err': 0.05,
-                'sfr': 1.03, 'sfr_err': 0.20,
+                'sfr': 1.03, 'sfr_err': 0.20, 'A': 318.96,
                 'logm': 10.54, 'logm_err': 0.1}, 
     'ngc3034': {'rsgcat': os.path.join(os.pardir, 'data/dolphot/ngc3034/ngc3034_sil_rsgcat.csv'),
                 'load_args': {'gal':'ngc3034', 'procdir':os.path.join(os.pardir, 'data/dolphot/ngc3034'), 'photfile_path':None,
@@ -220,7 +220,7 @@ ALL_CONFIGS = {
                 'sbicat_path': Path('../data/dolphot/ngc3034/ngc3034_sbi_cat.csv'),
                 'rsg_color': 0.35, 'dm': 0.5,
                 'z_true': 1.00, 'z_err': 0.3,
-                'sfr': 0.85, 'sfr_err': 0.20,
+                'sfr': 0.85, 'sfr_err': 0.20, 'A': 115.49,
                 'logm': 10.01, 'logm_err': 0.1}, 
 }
 
@@ -482,35 +482,6 @@ class star_class(object):
         plt.scatter(rsg_subset[f'{self.f1}_mag'] - rsg_subset[f'{self.f2}_mag'], rsg_subset[f'{self.f2}_mag'], 
                     c=rsg_subset['p_rsg'], s=5, cmap='inferno')
         plt.colorbar(label='P(RSG)')
-        
-    def bootstrap_kde_class(self, slopes, slope_errs, intercepts, intercept_errs, lcut, n_bootstrap=100, savepath=None):
-        boot_df = self.df.copy()
-        line_probs = np.zeros((len(boot_df), 3, n_bootstrap))
-        for i in range(n_bootstrap):
-            slopes_boot = np.random.normal(slopes, slope_errs)
-            intercepts_boot = np.random.normal(intercepts, intercept_errs)
-            # clip to within 3 sigma of means
-            slopes_boot[0] = np.clip(slopes_boot[0], slopes[0] - 3*slope_errs[0], slopes[0] + 3*slope_errs[0])
-            slopes_boot[1] = np.clip(slopes_boot[1], slopes[1] - 3*slope_errs[1], slopes[1] + 3*slope_errs[1])
-            intercepts_boot[0] = np.clip(intercepts_boot[0], intercepts[0] - 3*intercept_errs[0], intercepts[0] + 3*intercept_errs[0])
-            intercepts_boot[1] = np.clip(intercepts_boot[1], intercepts[1] - 3*intercept_errs[1], intercepts[1] + 3*intercept_errs[1])
-
-            seed_df_boot = self.select_seed_sample(slopes_boot, intercepts_boot, lcut)
-            probs = self.kde_class(seed_df_boot, assign_class=False)
-            line_probs[:, :, i] = probs
-
-        boot_df['p_rsg_mean'] = np.mean(line_probs[:, 0, :], axis=1)
-        boot_df['p_agb_mean'] = np.mean(line_probs[:, 1, :], axis=1)
-        boot_df['p_blue_mean'] = np.mean(line_probs[:, 2, :], axis=1)
-
-        boot_df['p_rsg_sig'] = np.std(line_probs[:, 0, :], axis=1, ddof=1)
-        boot_df['p_agb_sig'] = np.std(line_probs[:, 1, :], axis=1, ddof=1)
-        boot_df['p_blue_sig'] = np.std(line_probs[:, 2, :], axis=1, ddof=1)
-        self.df = boot_df
-        if savepath:
-            boot_df.to_csv(savepath, index=False)
-        else:
-            return boot_df
         
 
 class rsg_seed(star_class):
@@ -1178,11 +1149,12 @@ class validate_selection():
     def generate_rsg_truth_sample(self, gal, met, pcut=0.7, samp_err=False,
                                   nsamp=20000, gdf=None):
         self.logger.info(f"Generating RSG truth sample for {gal} at Z={met} with pcut={pcut} and samp_err={samp_err}")
-        cdf = pd.read_csv('../notebooks/hack/combined_cat.csv')
+        cdf = pd.read_csv('../data/catalog/combined_cat.csv')
         if gdf is None:
             gdf = pd.read_csv(f'../data/dolphot/{gal}/{gal}_kdecat.csv')
         # subset = cdf[(cdf['galaxy'].isin(Z_MAPPING[met])) & (cdf['p_rsg'] > pcut)]
         subset = gdf[gdf['p_rsg'] > pcut]
+        subset = subset.loc[~((subset['luminosity_median'] > 5) & (subset['temperature_median'] > 4700) & (subset['chimin'] < 0.012))]
         X = subset[['temperature_median', 'luminosity_median', 'tau_V_median']].values
         if samp_err:
             sig = (subset[['temperature_elow', 'luminosity_elow', 'tau_V_elow']].values + \
@@ -1390,9 +1362,7 @@ class validate_selection():
         inf_agb_params = np.array(inf_agb_params)
 
         rsg_inf_sample =  np.stack((inf_rsg_params[:, 0], inf_rsg_params[:, 3], inf_rsg_params[:, 2])).T
-        # rsg_inf_sample = rsg_truth_sample[['temperature_median', 'luminosity_median', 'tau_V_median']].values
         agb_inf_sample =  np.stack((inf_agb_params[:, 0], inf_agb_params[:, 3], inf_agb_params[:, 2])).T
-        # agb_inf_sample = agb_truth_sample[['temperature_median', 'luminosity_median', 'tau_V_median']].values
         inf_sample = np.vstack([rsg_inf_sample, agb_inf_sample])
         inf_pvals = self.cl.kde.predict_proba(inf_sample)
         rsg_pvals = inf_pvals[:len(rsg_inf_sample)]
@@ -1414,36 +1384,214 @@ class validate_selection():
         self.plot_sim_on_cmd(sim_rsg_truth, rsg_pvals, gal)
         self.plot_sbi_hrd(rsg_inf_sample, rsg_truth_sample, rsg_pvals)
 
+        rsg_re_sample = np.stack((rsg_truth_sample.values[:, 0], rsg_truth_sample.values[:, 3], rsg_truth_sample.values[:, 2])).T
+        agb_re_sample = np.stack((agb_truth_sample.values[:, 0], agb_truth_sample.values[:, 3], agb_truth_sample.values[:, 2])).T
+        truth_sample = np.vstack([rsg_re_sample, agb_re_sample])
+        truth_pvals = self.cl.kde.predict_proba(truth_sample)
+        rsg_truth_pvals = truth_pvals[:len(rsg_truth_sample)]
+        agb_truth_pvals = truth_pvals[len(rsg_truth_sample):]
+        highl_mask = (rsg_truth_sample.values[:, 3] > 5) & (rsg_truth_sample.values[:, 0] < 4500) & (rsg_truth_sample.values[:, 2] > 1)
+        rsg_truth_pvals[highl_mask, :] = np.array([[1.0, 0.0, 0.0]])
+
+        self.plot_sim_sample(rsg_truth_sample, rsg_truth_pvals, gal)
+
+        p7, c7 = np.sum(rsg_truth_pvals[:, 0] > 0.7) / len(rsg_truth_pvals) * 100, ((rsg_truth_pvals[:, 0] > 0.7).sum() / ((rsg_truth_pvals[:, 0] > 0.7).sum() + (agb_truth_pvals[:, 0] > 0.7).sum()))*100
+        p8, c8 = np.sum(rsg_truth_pvals[:, 0] > 0.8) / len(rsg_truth_pvals) * 100, ((rsg_truth_pvals[:, 0] > 0.8).sum() / ((rsg_truth_pvals[:, 0] > 0.8).sum() + (agb_truth_pvals[:, 0] > 0.8).sum()))*100
+        p9, c9 = np.sum(rsg_truth_pvals[:, 0] > 0.9) / len(rsg_truth_pvals) * 100, ((rsg_truth_pvals[:, 0] > 0.9).sum() / ((rsg_truth_pvals[:, 0] > 0.9).sum() + (agb_truth_pvals[:, 0] > 0.9).sum()))*100
+        self.logger.info(f"Completeness and purity for {gal.upper()} RSGs:")
+        self.logger.info(f"  pcut=0.7  →  Completeness: {p7:.1f}%  |  Purity: {c7:.1f}%")
+        self.logger.info(f"  pcut=0.8  →  Completeness: {p8:.1f}%  |  Purity: {c8:.1f}%")
+        self.logger.info(f"  pcut=0.9  →  Completeness: {p9:.1f}%  |  Purity: {c9:.1f}%")
+
+        p, c = self.plot_purity_completeness_curve(rsg_truth_pvals, agb_truth_pvals)
+        self.plot_sim_on_cmd(sim_rsg_truth, rsg_truth_pvals, gal)
+
         return p, c
-    
-def run_sc(gal):
-    try:
-        print(f"Processing {gal} in process {os.getpid()}")
-        sbicat_path = ALL_CONFIGS[gal]['sbicat_path']
-        f1_, f2_ = ALL_CONFIGS[gal]['f1'], ALL_CONFIGS[gal]['f2']
-        sc = star_class(gal, sbicat_path=sbicat_path, f1=f1_, f2=f2_)
 
-        slopes, intercepts, lcut = ALL_CONFIGS[gal]['slopes'], ALL_CONFIGS[gal]['intercepts'], ALL_CONFIGS[gal]['lcut']
-        slope_errs = (min(abs(slopes[0]*0.02), 0.25), min(abs(slopes[1]*0.02), 0.25))
-        intercept_errs = (min(abs(intercepts[0]*0.01), 0.25), min(abs(intercepts[1]*0.01), 0.25))
-        savepath = ALL_CONFIGS[gal]['load_args']['procdir'] / f'{gal}_kdecat.csv'
-        sc.bootstrap_kde_class(slopes, slope_errs, intercepts, intercept_errs, lcut, n_bootstrap=100, savepath=savepath)
-    except Exception as e:
-        print(f"Error processing {gal}: {e}")
-        traceback.print_exc()
+    def plot_leave_out_comparison(self, test_df, p_new, gal, test_pcut=0.7, pcut=0.7):
+        """
+        Diagnostics for the leave-out test: how the retrained KDE's held-out
+        probabilities compare with the full-catalogue values.
+        """
+        p_old  = test_df['p_rsg'].values
+        is_rsg = test_df['truth'].values == 0
 
-if __name__ == "__main__":
+        fig, axes = plt.subplots(1, 3, figsize=(15, 4.2))
 
-    import os
-    os.environ["OMP_NUM_THREADS"] = "1"
-    os.environ["MKL_NUM_THREADS"] = "1"
-    os.environ["OPENBLAS_NUM_THREADS"] = "1"
-    os.environ["NUMEXPR_NUM_THREADS"] = "1"
+        axes[0].scatter(p_old[~is_rsg], p_new[~is_rsg], s=3, c='coral',     alpha=0.4, label='AGB (full cat)')
+        axes[0].scatter(p_old[is_rsg],  p_new[is_rsg],  s=3, c='royalblue', alpha=0.4, label='RSG (full cat)')
+        axes[0].plot([0, 1], [0, 1], 'k--', lw=1)
+        axes[0].axhline(pcut, color='grey', ls=':', lw=1)
+        axes[0].axvline(test_pcut, color='grey', ls=':', lw=1)
+        axes[0].set_xlabel('p_rsg (full catalogue)')
+        axes[0].set_ylabel('p_rsg (leave-out KDE)')
+        axes[0].set_title('Held-out probability comparison')
+        axes[0].legend(fontsize=8, markerscale=3)
 
-    import torch
-    torch.set_num_threads(1)
+        axes[1].hist(p_new[is_rsg],  bins=50, range=(0, 1), color='royalblue', alpha=0.6, label='RSG (full cat)')
+        axes[1].hist(p_new[~is_rsg], bins=50, range=(0, 1), color='coral',     alpha=0.6, label='AGB (full cat)')
+        axes[1].axvline(pcut, color='k', ls='--', lw=1)
+        axes[1].set_yscale('log')
+        axes[1].set_xlabel('p_rsg (leave-out KDE)')
+        axes[1].set_ylabel('N')
+        axes[1].set_title('Held-out probability distribution')
+        axes[1].legend(fontsize=8)
 
-    # run kde in parallel for all galaxies over 10 cores
-    gals = list(ALL_CONFIGS.keys())
-    with Pool(processes=10) as pool:
-        pool.map(run_sc, gals)
+        sc_ = axes[2].scatter(test_df['temperature_median'][is_rsg], test_df['luminosity_median'][is_rsg],
+                              c=p_new[is_rsg], cmap='viridis', s=5, vmin=0, vmax=1)
+        plt.colorbar(sc_, ax=axes[2], label='p_rsg (leave-out KDE)')
+        axes[2].invert_xaxis()
+        axes[2].set_xlabel('Temperature (K)')
+        axes[2].set_ylabel('log L (Lsun)')
+        axes[2].set_title('Held-out RSGs')
+
+        fig.suptitle(f'{gal.upper()} - leave-out validation')
+        fig.tight_layout()
+        plt.show()
+        return fig
+
+    def calc_leave_out_val(self, gal, train_pcut=0.5, test_pcut=0.7, train_frac=0.5,
+                           max_agb_ratio=10, n_classes=3, alpha=0.5, random_state=42,
+                           plot=True):
+        """
+        Leave-out self-consistency test of the KDE classifier.
+
+        A fresh AdaptiveKDE is trained on a random `train_frac` subset of the
+        marginally-classified stars (p > `train_pcut`) and applied to the
+        held-out remainder, scored only on stars the full-catalogue KDE is
+        confident about (p > `test_pcut`).  Training on the looser cut makes
+        the seed deliberately fuzzier than the evaluation set: with identical
+        cuts the two samples are drawn from the same clean core of each class
+        and the test returns ~100% by construction.
+
+        The full-catalogue labels act as the reference "truth", so
+        completeness/purity here quantify how stable the classification is
+        against the choice (and quality) of training sample - they do NOT
+        measure absolute accuracy, since a bias shared by both KDEs is
+        invisible to this test.  Use `calc_completeness_purity` for that.
+
+        Note that with `n_classes=2` the probabilities are renormalised over
+        {RSG, AGB} only and therefore sit systematically higher than the
+        3-class `p_rsg` in the catalogue; the returned `p_new` vs `p_old`
+        comparison makes that offset explicit.
+
+        Parameters
+        ----------
+        gal           : galaxy name (labelling only)
+        train_pcut    : probability cut defining the TRAINING pool.  Lower than
+                        `test_pcut` so the KDE is seeded with a less clean,
+                        more inclusive sample.
+        test_pcut     : probability cut defining the reference classes stars
+                        are scored against.  Must be >= `train_pcut`.
+        train_frac    : fraction of each training pool used for training
+        max_agb_ratio : cap on the AGB:RSG ratio in the TRAINING set only.  The
+                        test set keeps the catalogue's natural class ratio so
+                        that purity stays meaningful.
+        n_classes     : 2 (RSG/AGB) or 3 (RSG/AGB/Blue)
+        alpha         : AdaptiveKDE bandwidth-adaptation exponent
+        random_state  : seed for the train/test split
+        plot          : produce diagnostic figures
+
+        Returns
+        -------
+        res : dict with the retrained kde, the held-out frame, new/old
+              probabilities, and completeness/purity at p = 0.7/0.8/0.9
+        """
+        if test_pcut < train_pcut:
+            raise ValueError(f'test_pcut ({test_pcut}) must be >= train_pcut ({train_pcut})')
+
+        cols = ['temperature_median', 'luminosity_median', 'tau_V_median']
+        class_names = ['RSG', 'AGB', 'Blue'][:n_classes]
+        pcols = ['p_rsg', 'p_agb', 'p_blue'][:n_classes]
+
+        pools = [self.kdf[self.kdf[pc] > train_pcut] for pc in pcols]
+        if any(len(p) == 0 for p in pools):
+            raise ValueError(f'No stars above train_pcut {train_pcut} for one or more of {class_names}')
+
+        n_rsg_train = int(len(pools[0]) * train_frac)
+        if n_rsg_train < 10:
+            raise ValueError(f'Only {len(pools[0])} RSGs above train_pcut {train_pcut}; too few to split')
+
+        rng = np.random.RandomState(random_state)
+        train, test = [], []
+        for i, pool in enumerate(pools):
+            n_train = int(len(pool) * train_frac)
+            if i > 0:
+                n_train = min(n_train, max_agb_ratio * n_rsg_train)
+            tr = pool.sample(n=n_train, replace=False, random_state=rng)
+            # held out, then restricted to the confidently-classified stars
+            held = pool.drop(tr.index)
+            te   = held[held[pcols[i]] > test_pcut]     # natural class ratio preserved
+            tr, te = tr.copy(), te.copy()
+            tr['truth'], te['truth'] = i, i
+            train.append(tr)
+            test.append(te)
+            self.logger.info(f'  {class_names[i]:5s}: {len(pool)} above p={train_pcut}  ->  '
+                             f'{len(tr)} train  |  {len(held)} held out  |  '
+                             f'{len(te)} test (p > {test_pcut})')
+
+        train_df = pd.concat(train)
+        test_df  = pd.concat(test)
+        if len(test[0]) == 0:
+            raise ValueError(f'No held-out RSGs above test_pcut {test_pcut}; '
+                             f'lower test_pcut or train_frac')
+
+        kde = AdaptiveKDE(alpha=alpha).fit(train_df[cols].values,
+                                           train_df['truth'].values,
+                                           class_names=class_names)
+
+        # single call: predict_proba max-normalises each class over the array it is given
+        probs = kde.predict_proba(test_df[cols].values)
+        p_new = probs[:, 0]
+        p_old = test_df['p_rsg'].values
+        is_rsg = test_df['truth'].values == 0
+
+        thresholds = np.linspace(0.0, 0.99, 100)
+        completeness, purity = [], []
+        for t in thresholds:
+            tp = np.sum(p_new[is_rsg] > t)
+            fp = np.sum(p_new[~is_rsg] > t)
+            completeness.append(tp / is_rsg.sum() * 100)
+            purity.append(tp / (tp + fp) * 100 if (tp + fp) else np.nan)
+        completeness, purity = np.array(completeness), np.array(purity)
+
+        self.logger.info(f'Leave-out validation for {gal.upper()} ({n_classes}-class, '
+                         f'train p>{train_pcut} @ {train_frac}, test p>{test_pcut}):')
+        summary = {}
+        for t in (0.7, 0.8, 0.9):
+            tp = np.sum(p_new[is_rsg] > t)
+            fp = np.sum(p_new[~is_rsg] > t)
+            c_ = tp / is_rsg.sum() * 100
+            p_ = tp / (tp + fp) * 100 if (tp + fp) else np.nan
+            summary[t] = (c_, p_)
+            self.logger.info(f'  pcut={t:.1f}  ->  Completeness: {c_:.1f}%  |  Purity: {p_:.1f}%')
+
+        # agreement between the two KDEs at a common threshold
+        flip_rsg = np.mean(p_new[is_rsg]  <= test_pcut) * 100
+        flip_agb = np.mean(p_new[~is_rsg] >  test_pcut) * 100
+        self.logger.info(f'  Label flips at p={test_pcut}: {flip_rsg:.1f}% of held-out RSGs lost, '
+                         f'{flip_agb:.1f}% of held-out non-RSGs gained')
+        self.logger.info(f'  Median p_rsg shift (new - old), held-out RSGs: '
+                         f'{np.median(p_new[is_rsg] - p_old[is_rsg]):+.3f}')
+
+        if plot:
+            fig, ax1 = plt.subplots()
+            ax1.plot(thresholds, completeness, color='blue')
+            ax1.set_xlabel('p_rsg Threshold')
+            ax1.set_ylabel('Completeness (%)', color='blue')
+            ax1.tick_params(axis='y', labelcolor='blue')
+            ax2 = ax1.twinx()
+            ax2.plot(thresholds, purity, color='orange')
+            ax2.set_ylabel('Purity (%)', color='orange')
+            ax2.tick_params(axis='y', labelcolor='orange')
+            for t, c_ in zip((0.7, 0.8, 0.9), ('sandybrown', 'silver', 'gold')):
+                ax1.axvline(t, color=c_, linestyle='--')
+            ax1.set_title(f'{gal.upper()} - leave-out completeness / purity')
+            plt.show()
+
+            self.plot_leave_out_comparison(test_df, p_new, gal, test_pcut=test_pcut)
+
+        return {'kde': kde, 'train_df': train_df, 'test_df': test_df,
+                'p_new': p_new, 'p_old': p_old, 'is_rsg': is_rsg,
+                'thresholds': thresholds, 'completeness': completeness,
+                'purity': purity, 'summary': summary}
