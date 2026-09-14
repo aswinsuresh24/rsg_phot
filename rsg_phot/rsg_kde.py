@@ -115,6 +115,9 @@ ALL_CONFIGS = {
                 'z_true': 0.49, 'z_err': 0.11,
                 'sfr': -0.94, 'sfr_err': 0.2, 'A': 19.52,
                 'logm': 9.24, 'logm_err': 0.1},
+                # restrict F200W to 21 - 26 to capture blue stars well
+                # nmin=6, mmax=10 for seed selection to capture blue stars
+                # remove RSGs with logL > 5.5 to avoid contamination from foreground stars
     'ngc1367': {'rsgcat': Path('../data/dolphot/ngc1367/ngc1367_sil_rsgcat.csv'),
                 'load_args': {'gal':'ngc1367',
                               'procdir':Path('../data/dolphot/ngc1367'), 'photfile_path':None,
@@ -200,6 +203,9 @@ ALL_CONFIGS = {
                 'z_true': 1.45, 'z_err': 0.5,
                 'sfr': -0.28, 'sfr_err': 0.20, 'A': 206.32,
                 'logm': 10.65, 'logm_err': 0.1}, 
+                # pcut 0.6
+                # F200W < 24.5 for seed selection, nmin=6, nmax=7
+                # logL < 4.2 & tau_V > 0.5 for agb seed 
     'ngc4038': {'rsgcat': os.path.join(os.pardir, 'data/dolphot/ngc4038/ngc4038_sil_rsgcat.csv'),
                 'load_args': {'gal':'ngc4038', 'procdir':os.path.join(os.pardir, 'data/dolphot/ngc4038'), 'photfile_path':None,
                               'dm':31.053, 'dmerr':0.05, 'z':0.0, 'trgb':('F090W', 27.72),
@@ -210,7 +216,7 @@ ALL_CONFIGS = {
                 'rsg_color': 0.0, 'dm': 0.5,
                 'z_true': 1.02, 'z_err': 0.05,
                 'sfr': 1.03, 'sfr_err': 0.20, 'A': 318.96,
-                'logm': 10.54, 'logm_err': 0.1}, 
+                'logm': 10.54, 'logm_err': 0.1}, #F150W > 25 AGBs in the seed
     'ngc3034': {'rsgcat': os.path.join(os.pardir, 'data/dolphot/ngc3034/ngc3034_sil_rsgcat.csv'),
                 'load_args': {'gal':'ngc3034', 'procdir':os.path.join(os.pardir, 'data/dolphot/ngc3034'), 'photfile_path':None,
                               'dm':27.95, 'dmerr':0.21, 'z':0.0, 'trgb':('F090W', 23.95),
@@ -485,24 +491,8 @@ class star_class(object):
         
 
 class rsg_seed(star_class):
-    def __init__(self, gal:str, sbicat_path:Path, f1:str, f2:str, rsg_color:float, dm=0.5, deredden=False):
+    def __init__(self, gal:str, sbicat_path:Path, f1:str, f2:str, rsg_color:float, dm=0.5):
         super().__init__(gal, sbicat_path, f1, f2)
-
-        if deredden:
-            e_bv = self.df['Av_median'] / 3.1
-            d_ebv = self.df['Av_eup'] / 3.1
-
-            from dust_extinction.parameter_averages import CCM89, G23
-            ext = G23(Rv=3.1)
-            for flt_ in ['F115W', 'F200W']:
-                wv = float(flt_[1:4])/100*u.um
-                a_lambda = ext(wv)
-                A_lambda = a_lambda * e_bv * 3.1
-                dA_lambda = a_lambda * d_ebv * 3.1
-                self.df[flt_ + '_mag_dered'] = self.df[flt_ + '_mag'] - A_lambda
-                self.df[flt_ + '_mag_dered_err'] = np.sqrt(self.df[flt_ + '_err']**2 + dA_lambda**2)
-        # self.df['F115W_mag'] = self.df['F115W_mag_dered']
-        # self.df['F200W_mag'] = self.df['F200W_mag_dered']
 
         self.rsg_color = rsg_color
         self.lcut = self.get_lcut()
@@ -1372,6 +1362,7 @@ class validate_selection():
 
         self.plot_sim_sample(rsg_truth_sample, rsg_pvals, gal)
 
+        latex_string = ''
         p7, c7 = np.sum(rsg_pvals[:, 0] > 0.7) / len(rsg_pvals) * 100, ((rsg_pvals[:, 0] > 0.7).sum() / ((rsg_pvals[:, 0] > 0.7).sum() + (agb_pvals[:, 0] > 0.7).sum()))*100
         p8, c8 = np.sum(rsg_pvals[:, 0] > 0.8) / len(rsg_pvals) * 100, ((rsg_pvals[:, 0] > 0.8).sum() / ((rsg_pvals[:, 0] > 0.8).sum() + (agb_pvals[:, 0] > 0.8).sum()))*100
         p9, c9 = np.sum(rsg_pvals[:, 0] > 0.9) / len(rsg_pvals) * 100, ((rsg_pvals[:, 0] > 0.9).sum() / ((rsg_pvals[:, 0] > 0.9).sum() + (agb_pvals[:, 0] > 0.9).sum()))*100
@@ -1379,6 +1370,7 @@ class validate_selection():
         self.logger.info(f"  pcut=0.7  →  Completeness: {p7:.1f}%  |  Purity: {c7:.1f}%")
         self.logger.info(f"  pcut=0.8  →  Completeness: {p8:.1f}%  |  Purity: {c8:.1f}%")
         self.logger.info(f"  pcut=0.9  →  Completeness: {p9:.1f}%  |  Purity: {c9:.1f}%")
+        latex_string += f'{p7/100:.2f} & {p8/100:.2f} & {p9/100:.2f} & {c7/100:.2f} & {c8/100:.2f} & {c9/100:.2f} & '
 
         p, c = self.plot_purity_completeness_curve(rsg_pvals, agb_pvals)
         self.plot_sim_on_cmd(sim_rsg_truth, rsg_pvals, gal)
@@ -1402,9 +1394,11 @@ class validate_selection():
         self.logger.info(f"  pcut=0.7  →  Completeness: {p7:.1f}%  |  Purity: {c7:.1f}%")
         self.logger.info(f"  pcut=0.8  →  Completeness: {p8:.1f}%  |  Purity: {c8:.1f}%")
         self.logger.info(f"  pcut=0.9  →  Completeness: {p9:.1f}%  |  Purity: {c9:.1f}%")
+        latex_string += f'{p7/100:.2f} & {p8/100:.2f} & {p9/100:.2f} & {c7/100:.2f} & {c8/100:.2f} & {c9/100:.2f}'
 
         p, c = self.plot_purity_completeness_curve(rsg_truth_pvals, agb_truth_pvals)
         self.plot_sim_on_cmd(sim_rsg_truth, rsg_truth_pvals, gal)
+        print(latex_string)
 
         return p, c
 
@@ -1450,91 +1444,97 @@ class validate_selection():
         plt.show()
         return fig
 
-    def calc_leave_out_val(self, gal, train_pcut=0.5, test_pcut=0.7, train_frac=0.5,
-                           max_agb_ratio=10, n_classes=3, alpha=0.5, random_state=42,
+    def calc_leave_out_val(self, gal, seed_df, test_pcut=0.7, train_frac=0.5,
+                           max_agb_ratio=5, n_classes=3, alpha=0.5, random_state=42,
                            plot=True):
         """
-        Leave-out self-consistency test of the KDE classifier.
+        Leave-out validation of the KDE classifier against the CMD seed sample.
 
-        A fresh AdaptiveKDE is trained on a random `train_frac` subset of the
-        marginally-classified stars (p > `train_pcut`) and applied to the
-        held-out remainder, scored only on stars the full-catalogue KDE is
-        confident about (p > `test_pcut`).  Training on the looser cut makes
-        the seed deliberately fuzzier than the evaluation set: with identical
-        cuts the two samples are drawn from the same clean core of each class
-        and the test returns ~100% by construction.
+        A fresh AdaptiveKDE is trained on a random `train_frac` subset of
+        `seed_df` - the GMM/colour-magnitude seed produced by
+        `rsg_seed.run_seed_selection`, whose labels do not come from any KDE -
+        and is then scored on the confidently classified catalogue stars
+        (p > `test_pcut` in `self.kdf`).  Any star used for training is dropped
+        from the test set.
 
-        The full-catalogue labels act as the reference "truth", so
-        completeness/purity here quantify how stable the classification is
-        against the choice (and quality) of training sample - they do NOT
-        measure absolute accuracy, since a bias shared by both KDEs is
-        invisible to this test.  Use `calc_completeness_purity` for that.
-
-        Note that with `n_classes=2` the probabilities are renormalised over
-        {RSG, AGB} only and therefore sit systematically higher than the
-        3-class `p_rsg` in the catalogue; the returned `p_new` vs `p_old`
-        comparison makes that offset explicit.
+        Because the labels on the two sides come from different constructions
+        (CMD/GMM for training, parameter-space KDE for the reference), this
+        probes more than resampling variance.  Independence is still only
+        partial: the catalogue KDE supplying the test labels was itself fit on
+        the full `seed_df`, so the held-out half of the seed still influenced
+        it.  `calc_completeness_purity` remains the simulator-based, fully
+        independent check.
 
         Parameters
         ----------
         gal           : galaxy name (labelling only)
-        train_pcut    : probability cut defining the TRAINING pool.  Lower than
-                        `test_pcut` so the KDE is seeded with a less clean,
-                        more inclusive sample.
-        test_pcut     : probability cut defining the reference classes stars
-                        are scored against.  Must be >= `train_pcut`.
-        train_frac    : fraction of each training pool used for training
+        seed_df       : seed sample with a 'class' column of RSG/AGB/Blue, as
+                        returned by `run_seed_selection` / `select_seed_sample`
+        test_pcut     : catalogue probability cut defining the reference classes
+        train_frac    : fraction of each seed class used for training
         max_agb_ratio : cap on the AGB:RSG ratio in the TRAINING set only.  The
                         test set keeps the catalogue's natural class ratio so
                         that purity stays meaningful.
-        n_classes     : 2 (RSG/AGB) or 3 (RSG/AGB/Blue)
+        n_classes     : 3 (RSG/AGB/Blue) or 2 (RSG/AGB).  Keep at 3 so the new
+                        probabilities are normalised over the same classes as
+                        the catalogue's `p_rsg` and remain comparable to it.
         alpha         : AdaptiveKDE bandwidth-adaptation exponent
-        random_state  : seed for the train/test split
+        random_state  : seed for the training draw
         plot          : produce diagnostic figures
 
         Returns
         -------
-        res : dict with the retrained kde, the held-out frame, new/old
-              probabilities, and completeness/purity at p = 0.7/0.8/0.9
+        res : dict with the retrained kde, the training/test frames, the unused
+              half of the seed sample, new/old probabilities, and
+              completeness/purity at p = 0.7/0.8/0.9
         """
-        if test_pcut < train_pcut:
-            raise ValueError(f'test_pcut ({test_pcut}) must be >= train_pcut ({train_pcut})')
-
         cols = ['temperature_median', 'luminosity_median', 'tau_V_median']
         class_names = ['RSG', 'AGB', 'Blue'][:n_classes]
         pcols = ['p_rsg', 'p_agb', 'p_blue'][:n_classes]
 
-        pools = [self.kdf[self.kdf[pc] > train_pcut] for pc in pcols]
-        if any(len(p) == 0 for p in pools):
-            raise ValueError(f'No stars above train_pcut {train_pcut} for one or more of {class_names}')
+        if 'class' not in seed_df.columns:
+            raise ValueError("seed_df needs a 'class' column of RSG/AGB/Blue labels")
+        seed = seed_df[seed_df['class'].isin(class_names)].copy()
+        seed = seed[~seed.index.duplicated(keep='first')]
+        seed['truth'] = seed['class'].map({n: i for i, n in enumerate(class_names)})
 
-        n_rsg_train = int(len(pools[0]) * train_frac)
+        n_rsg_seed = int((seed['truth'] == 0).sum())
+        n_rsg_train = int(n_rsg_seed * train_frac)
         if n_rsg_train < 10:
-            raise ValueError(f'Only {len(pools[0])} RSGs above train_pcut {train_pcut}; too few to split')
+            raise ValueError(f'Only {n_rsg_seed} RSGs in seed_df; too few to split')
 
         rng = np.random.RandomState(random_state)
-        train, test = [], []
-        for i, pool in enumerate(pools):
+        train = []
+        for i, name in enumerate(class_names):
+            pool = seed[seed['truth'] == i]
+            if len(pool) == 0:
+                raise ValueError(f'No {name} stars in seed_df')
             n_train = int(len(pool) * train_frac)
             if i > 0:
                 n_train = min(n_train, max_agb_ratio * n_rsg_train)
-            tr = pool.sample(n=n_train, replace=False, random_state=rng)
-            # held out, then restricted to the confidently-classified stars
-            held = pool.drop(tr.index)
-            te   = held[held[pcols[i]] > test_pcut]     # natural class ratio preserved
-            tr, te = tr.copy(), te.copy()
-            tr['truth'], te['truth'] = i, i
-            train.append(tr)
-            test.append(te)
-            self.logger.info(f'  {class_names[i]:5s}: {len(pool)} above p={train_pcut}  ->  '
-                             f'{len(tr)} train  |  {len(held)} held out  |  '
-                             f'{len(te)} test (p > {test_pcut})')
-
+            train.append(pool.sample(n=n_train, replace=False, random_state=rng))
+            self.logger.info(f'  {name:5s}: {len(pool)} in seed  ->  {n_train} train')
         train_df = pd.concat(train)
-        test_df  = pd.concat(test)
+        seed_holdout = seed.drop(index=train_df.index)
+
+        # reference sample: confidently classified catalogue stars, minus anything trained on
+        test, n_dropped = [], 0
+        for i, pc in enumerate(pcols):
+            pool = self.kdf[self.kdf[pc] > test_pcut]
+            overlap = pool.index.intersection(train_df.index)
+            te = pool.drop(index=overlap).copy()
+            te['truth'] = i
+            test.append(te)
+            n_dropped += len(overlap)
+            self.logger.info(f'  {class_names[i]:5s}: {len(pool)} above p={test_pcut}  ->  '
+                             f'{len(overlap)} dropped as training stars  |  {len(te)} test')
+        if n_dropped == 0:
+            self.logger.warning('No seed stars found in the catalogue test pools - '
+                                'seed_df and self.kdf may not share an index, so train '
+                                'and test sets could overlap')
+        test_df = pd.concat(test)
         if len(test[0]) == 0:
-            raise ValueError(f'No held-out RSGs above test_pcut {test_pcut}; '
-                             f'lower test_pcut or train_frac')
+            raise ValueError(f'No catalogue RSGs above test_pcut {test_pcut}')
 
         kde = AdaptiveKDE(alpha=alpha).fit(train_df[cols].values,
                                            train_df['truth'].values,
@@ -1556,7 +1556,7 @@ class validate_selection():
         completeness, purity = np.array(completeness), np.array(purity)
 
         self.logger.info(f'Leave-out validation for {gal.upper()} ({n_classes}-class, '
-                         f'train p>{train_pcut} @ {train_frac}, test p>{test_pcut}):')
+                         f'trained on {train_frac:.0%} of seed_df, tested on p>{test_pcut}):')
         summary = {}
         for t in (0.7, 0.8, 0.9):
             tp = np.sum(p_new[is_rsg] > t)
@@ -1566,12 +1566,11 @@ class validate_selection():
             summary[t] = (c_, p_)
             self.logger.info(f'  pcut={t:.1f}  ->  Completeness: {c_:.1f}%  |  Purity: {p_:.1f}%')
 
-        # agreement between the two KDEs at a common threshold
         flip_rsg = np.mean(p_new[is_rsg]  <= test_pcut) * 100
         flip_agb = np.mean(p_new[~is_rsg] >  test_pcut) * 100
-        self.logger.info(f'  Label flips at p={test_pcut}: {flip_rsg:.1f}% of held-out RSGs lost, '
-                         f'{flip_agb:.1f}% of held-out non-RSGs gained')
-        self.logger.info(f'  Median p_rsg shift (new - old), held-out RSGs: '
+        self.logger.info(f'  Label flips at p={test_pcut}: {flip_rsg:.1f}% of catalogue RSGs lost, '
+                         f'{flip_agb:.1f}% of catalogue non-RSGs gained')
+        self.logger.info(f'  Median p_rsg shift (new - old), catalogue RSGs: '
                          f'{np.median(p_new[is_rsg] - p_old[is_rsg]):+.3f}')
 
         if plot:
@@ -1586,12 +1585,12 @@ class validate_selection():
             ax2.tick_params(axis='y', labelcolor='orange')
             for t, c_ in zip((0.7, 0.8, 0.9), ('sandybrown', 'silver', 'gold')):
                 ax1.axvline(t, color=c_, linestyle='--')
-            ax1.set_title(f'{gal.upper()} - leave-out completeness / purity')
+            ax1.set_title(f'{gal.upper()} - seed-trained leave-out completeness / purity')
             plt.show()
 
             self.plot_leave_out_comparison(test_df, p_new, gal, test_pcut=test_pcut)
 
         return {'kde': kde, 'train_df': train_df, 'test_df': test_df,
-                'p_new': p_new, 'p_old': p_old, 'is_rsg': is_rsg,
-                'thresholds': thresholds, 'completeness': completeness,
-                'purity': purity, 'summary': summary}
+                'seed_holdout': seed_holdout, 'p_new': p_new, 'p_old': p_old,
+                'is_rsg': is_rsg, 'thresholds': thresholds,
+                'completeness': completeness, 'purity': purity, 'summary': summary}
