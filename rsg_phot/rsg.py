@@ -20,7 +20,6 @@ import astropy.constants as const
 from scipy import interpolate
 from scipy.integrate import simpson
 import matplotlib.pyplot as plt
-from rsg_phot.dust import dustgen
 from astropy.io.misc.hdf5 import read_table_hdf5
 import pickle
 from rsg_phot.utils import logger
@@ -351,26 +350,6 @@ class rsg_phot(object):
                     mags.append(mag1-mag2)
                 except ValueError:
                     mags.append(np.nan)
-
-        return(mags)
-        
-    def create_rsg(self, tau_V, lum, temp, dust_temp, dist, dust_model, sptype='all'):
-        # RSG model takes luminosity in Lsol as input
-        rsg_model = dustgen(dist=dist)
-        scaled_lum = 10**(lum.to(u.Lsun)).value
-        spec = rsg_model.get_ext_bb((tau_V, scaled_lum, temp, dust_temp), dust_model=dust_model, sptype=sptype)
-
-        return(spec)
-        
-    def compute_rsg_mag(self, inst_filt, tau_V, lum, temp, dust_temp, dist, dust_model):
-
-        # Scale spectrum up to input luminosity
-        sp = self.create_rsg(tau_V, lum, temp, dust_temp, dist, dust_model)
-
-        # Get bandpasses and compute mags
-        bandpasses = self.get_bandpasses(inst_filt)
-        mags = self.compute_synphot_mag(sp, bandpasses)
-        mags = dict(zip(inst_filt, mags))
 
         return(mags)
     
