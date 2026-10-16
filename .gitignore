@@ -9,6 +9,7 @@ examples/
 jwstrsg-vault/
 PKG-INFO
 *csv
+*md
 *png
 *pdf
 *fits
