@@ -3,7 +3,7 @@ import stsynphot
 import synphot
 from synphot import SpectralElement
 from synphot.models import Empirical1D
-import os, glob, sys
+import os, glob, sys, re
 import numpy as np
 from astropy.io import fits
 import astropy.units as u
@@ -38,10 +38,14 @@ class dusty_gen(object):
                  dist=10*u.Mpc, 
                  logz=0.00,
                  logg=0.00,
-                 interp_method='pchip', 
+                 interp_method='pchip',
                  rewrite_lambda_grid=False,
                  modeldir='/Users/aswin/rsg_phot/data/marcs/m1.00_g0.00',
-                 outdir='/Users/aswin/rsg_phot/data/dusty_grid'):
+                 outdir='/Users/aswin/rsg_phot/data/dusty_grid',
+                 mass=1.0,
+                 c_o=None,
+                 xi=2.5,
+                 comarcs_version=None):
 
         self.dist = dist
 
@@ -53,27 +57,35 @@ class dusty_gen(object):
         # Dust-to-gas mass ratio assumption
         self.DUST_TO_GAS = 0.01
 
-        # Read MARCS models
+        # Read model atmospheres (COMARCS is checked first: its path contains 'marcs')
         self.rsg_modeldir = modeldir
         self.rsg_logz = logz
         sgn = '+' if self.rsg_logz > -1e-5 else '-'
-        if 'marcs' in self.rsg_modeldir:
+        if 'comarcs' in os.path.basename(os.path.normpath(self.rsg_modeldir)).lower():
+            self.modeltype='COMARCS'
+        elif 'marcs' in self.rsg_modeldir:
             self.modeltype='MARCS'
         elif 'newera' in self.rsg_modeldir:
             self.modeltype='NewEra'
         else:
-            raise ValueError('Model directory must have either MARCS or NewEra models')
-        
-        model_spec = np.loadtxt(os.path.join(self.rsg_modeldir, 
-                                             '{modeltype}_models_g{logg:.2f}_Z{sgn}{met:.2f}.dat'.format(modeltype=self.modeltype, 
-                                                                                                         sgn=sgn, 
-                                                                                                         logg=logg, 
-                                                                                                         met=np.abs(self.rsg_logz))),
-                                             dtype=float)
-        self.rsg_temp = model_spec[0] * u.K
-        self.rsg_data = model_spec[1:]
+            raise ValueError('Model directory must have COMARCS, MARCS or NewEra models')
+
+        if self.modeltype == 'COMARCS':
+            self.load_comarcs(logg=logg, logz=logz, mass=mass, c_o=c_o, xi=xi, version=comarcs_version)
+        else:
+            model_spec = np.loadtxt(os.path.join(self.rsg_modeldir,
+                                                 '{modeltype}_models_g{logg:.2f}_Z{sgn}{met:.2f}.dat'.format(modeltype=self.modeltype,
+                                                                                                             sgn=sgn,
+                                                                                                             logg=logg,
+                                                                                                             met=np.abs(self.rsg_logz))),
+                                                 dtype=float)
+            self.rsg_temp = model_spec[0] * u.K
+            self.rsg_data = model_spec[1:]
+            self.rsg_wavelength = np.logspace(np.log10(1300.), np.log10(200000.), num=5036) * u.Angstrom
+            # blackbody tail beyond the model coverage, scaled over rsg_match (micron)
+            self.rsg_join, self.rsg_match = 20.0, (10.0, 20.0)
+            self.rsg_tag = self.modeltype.lower()
         self.rsg_minflux = np.min(self.rsg_data)
-        self.rsg_wavelength = np.logspace(np.log10(1300.), np.log10(200000.), num=5036) * u.Angstrom
         self.rsg_interp = self.setup_temp_interp(interp_method)
 
         # DUSTY setup 
@@ -94,6 +106,75 @@ class dusty_gen(object):
             curr += int(a.shape[0]/newshape)
         return newarray
     
+    COMARCS_PATTERN = re.compile(r'^(?P<pre>[a-z]+(?P<code>\d+)v\d+)_t(?P<t>\d+)_g(?P<g>[+-]\d+)_m(?P<m>\d+)'
+                                 r'_o(?P<o>\d+)_c(?P<c>\d+)_fe(?P<fe>\d+)(?P<extra>(_[a-z]+[+-]\d+)*)'
+                                 r'_xi(?P<xi>\d+)_(?P<v>[a-z0-9]+?)(?P<suf>_.*)?\.isp$')
+    # log eps(Fe) of the solar-scaled COMARCS sets, so [Fe/H] = log eps(Fe) - 7.563
+    COMARCS_FE_SUN = 7.563
+
+    def parse_comarcs_name(self, fname):
+        # COMARCS file names encode Teff, log g, mass, log eps of O, C and Fe,
+        # any abundance offsets, the microturbulence and the code version, 
+        # e.g. mxcom10v06_t2500_g+000_m0100_o88029_c89491_fe75630_xi25_c10b.isp
+        m = self.COMARCS_PATTERN.match(fname)
+        if m is None:
+            return None
+        val = lambda s: int(s) / 10**(len(s) - 1)
+        return {'file': fname, 'code': int(m['code']), 'temp': int(m['t']), 'logg': int(m['g'])/100,
+                'mass': int(m['m'])/100, 'c_o': 10**(val(m['c']) - val(m['o'])),
+                'feh': val(m['fe']) - self.COMARCS_FE_SUN, 'xi': int(m['xi'])/10, 'version': m['v'],
+                'extra': m['extra'] or '', 'suffix': m['suf'] or ''}
+
+    def load_comarcs(self, logg, logz, mass, c_o, xi=2.5, version=None):
+        # Load one 1D Teff sequence of COMARCS R~200 spectra  at fixed
+        # log g, mass, [Fe/H], C/O and microturbulence. 
+        models = [p for p in map(self.parse_comarcs_name, os.listdir(self.rsg_modeldir))
+                  if p is not None and not p['extra'] and not p['suffix']]
+        match = [p for p in models if abs(p['logg'] - logg) < 0.005 and abs(p['mass'] - mass) < 0.005
+                 and abs(p['feh'] - logz) < 0.01 and abs(p['xi'] - xi) < 0.01
+                 and (c_o is not None and abs(p['c_o']/c_o - 1) < 0.01)]
+        if version is not None:
+            match = [p for p in match if p['version'] == version]
+        if not match:
+            avail = sorted({round(p['c_o'], 2) for p in models if abs(p['logg'] - logg) < 0.005 and
+                            abs(p['mass'] - mass) < 0.005 and abs(p['feh'] - logz) < 0.01})
+            raise ValueError(f'No COMARCS models for logg={logg}, M={mass}, [Fe/H]={logz}, C/O={c_o}, xi={xi}'
+                             + (f', version={version}' if version else '') + f'; C/O available there: {avail}')
+
+        versions = sorted({p['version'] for p in match})
+        if len(versions) > 1:
+            temps = {v: sorted({p['temp'] for p in match if p['version'] == v}) for v in versions}
+            raise ValueError(f'COMARCS models at these parameters come from several code versions {temps}; '
+                             'pass comarcs_version to pick one rather than mixing them')
+        # the same model computed with several code releases: keep the newest
+        by_temp = {}
+        for p in match:
+            if p['temp'] not in by_temp or p['code'] > by_temp[p['temp']]['code']:
+                by_temp[p['temp']] = p
+        if len(by_temp) < 2:
+            raise ValueError(f'Need at least two COMARCS temperatures to interpolate, found {sorted(by_temp)}')
+
+        temps = sorted(by_temp)
+        wave, flux = None, []
+        for t in temps:
+            d = np.loadtxt(os.path.join(self.rsg_modeldir, by_temp[t]['file']))
+            if wave is None:
+                wave = d[:, 0]
+            elif len(d) != len(wave) or not np.allclose(d[:, 0], wave, rtol=1e-6):
+                raise ValueError(f'{by_temp[t]["file"]} is on a different wavelength grid from the other models')
+            flux.append(d[:, 2] / d[:, 0])                     # lambda*L_lambda -> L_lambda shape
+
+        self.rsg_temp = np.array(temps, dtype=float) * u.K
+        self.rsg_data = np.array(flux).T                         # (n_wavelength, n_temp), as for MARCS
+        self.rsg_wavelength = wave * u.Angstrom
+        self.rsg_files = [by_temp[t]['file'] for t in temps]
+        self.comarcs_version = versions[0]
+
+        self.rsg_join = wave[-1] / 1e4
+        self.rsg_match = (0.96 * self.rsg_join, self.rsg_join)
+        self.rsg_tag = (f'comarcs_g{logg:+.2f}_m{mass:.2f}_feh{logz:+.2f}_co{c_o:.2f}_xi{xi:.1f}_'
+                        f'{self.comarcs_version}')
+
     def setup_temp_interp(self, interp_method='pchip'):
         # All model spectra share one wavelength grid, so interpolate in temperature
         # only, in log flux. This is exact at the grid temperatures and, with PCHIP,
@@ -219,7 +300,7 @@ class dusty_gen(object):
     def setup_input_spec(self, temp, outdir, redo=False):
         grid = self.read_lambda_grid()
         # the file depends on the DUSTY grid it was averaged onto
-        specfilename = os.path.join(outdir, f'{self.modeltype.lower()}_{temp.value}_npL{len(grid)}.dat')
+        specfilename = os.path.join(outdir, f'{self.rsg_tag}_{temp.value}_npL{len(grid)}.dat')
         if redo or not os.path.exists(specfilename):
             if not os.path.exists(outdir):
                 os.makedirs(outdir)
@@ -228,7 +309,8 @@ class dusty_gen(object):
             # average onto the DUSTY wavelength grid
             rsg_flux = self.get_rsg(temp, model='g00')
             rsg_wv = self.rsg_wavelength.to(u.um).value
-            rsg_wv, rsg_flux = self.extend_bb_tail(rsg_wv, rsg_flux, temp.to(u.K).value)
+            rsg_wv, rsg_flux = self.extend_bb_tail(rsg_wv, rsg_flux, temp.to(u.K).value,
+                                                   lam_join=self.rsg_join, lam_match=self.rsg_match)
             spec_input = np.array(self.cell_average(rsg_wv, rsg_flux, grid)).T
 
             # write marcs model as input spectrum for dusty
@@ -403,6 +485,8 @@ class dusty_gen(object):
                 grid_temps = np.array(list(np.arange(3300., 4100., 100.)) + list(np.array([4250, 4500])))
             if self.modeltype=='NewEra':
                 grid_temps = np.arange(2500, 5100, 100)
+            if self.modeltype=='COMARCS':
+                grid_temps = self.rsg_temp.value
                 
         if grid_dust_temps is None:
             grid_dust_temps = np.array([200.0, 500.0, 800.0, 1000.0, 1200.0, 1500.0, 1800.0])
@@ -474,6 +558,10 @@ class dusty_likelihood(dusty_gen):
                  shell_thickness=1e4,
                  fixed=None,
                  interp_method='pchip',
+                 mass=1.0,
+                 c_o=None,
+                 xi=2.5,
+                 comarcs_version=None,
                  workdir=None,
                  keep_files=False,
                  accuracy=0.05,
@@ -481,7 +569,8 @@ class dusty_likelihood(dusty_gen):
                  modeldir='../data/marcs/m1.00_g0.00'):
 
         super().__init__(dist=dist, logz=logz, logg=logg, interp_method=interp_method,
-                         rewrite_lambda_grid=False, modeldir=modeldir, outdir=outdir)
+                         rewrite_lambda_grid=False, modeldir=modeldir, outdir=outdir,
+                         mass=mass, c_o=c_o, xi=xi, comarcs_version=comarcs_version)
         self.logz = logz
         self.outdir = Path(outdir)
         self.modeldir = Path(modeldir)
@@ -806,6 +895,7 @@ class dusty_likelihood(dusty_gen):
         sed['fnu'] = fnu
 
         sed.meta = {k: p[k] for k in self.PARAM_NAMES}
+        sed.meta['photosphere'] = self.rsg_tag
         sed.meta['comp'] = self.abundances
         sed.meta['nk_comp'] = self.nk_abundances
         sed.meta['size_dist'] = self.size_dist
@@ -821,6 +911,15 @@ class dusty_likelihood(dusty_gen):
         sed.meta['dusty_warnings'] = results['warnings']
 
         return sed
+
+    @staticmethod
+    def tapered(bp):
+        # stsynphot bandpasses (e.g. HST ACS/WFC3 from stsynphot.band) disable taper(), so
+        # tabulate them as a plain SpectralElement first
+        try:
+            return bp.taper()
+        except NotImplementedError:
+            return SpectralElement(Empirical1D, points=bp.waveset, lookup_table=bp(bp.waveset)).taper()
 
     def model_phot(self, theta, bandpasses, sed=None):
         '''
@@ -838,7 +937,7 @@ class dusty_likelihood(dusty_gen):
             # taper the bandpass to zero at its ends: curves that stop at non-zero
             # transmission (pandeia MIRI F2550W ends at 30 um with T ~ 0.6) are otherwise
             # extrapolated over the whole long-wavelength model grid
-            obs = synphot.Observation(sp, bp.taper(), force='taper', binset=wv)
+            obs = synphot.Observation(sp, self.tapered(bp), force='taper', binset=wv)
             phot[filt] = obs.effstim(u.uJy).value
 
         return phot
