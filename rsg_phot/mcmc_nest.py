@@ -96,6 +96,11 @@ class nest(object):
             'shell_thickness': [2.0, 1e4],
             # exponential mass-loss shape of dusty_likelihood(density='exp'), u = R_in/(v t_e)
             'u': [-0.1, 2.0],
+            # DustyGrid power-law index (rho ~ r^-s) and relative thickness Y = R_out/R_in,
+            # over the default grid; with a DustyGrid model all the grid parameters take
+            # the grid's own axis ranges
+            's': [1.0, 3.5],
+            'Y': [10.0, 1e4],
         }
         self.mode = mode.lower()
         if self.mode not in MODE_FILTS:
@@ -135,6 +140,9 @@ class nest(object):
             self.model = model if isinstance(model, rsg_phot.dust.DustyGrid) else rsg_phot.dust.DustyGrid(model)
             self.grid_params = [self.GRID_NAMES[k] for k in self.model.AXES]
             self.model_fit_params = self.grid_params + ['luminosity'] + ext_params
+            # the bounds of the grid parameters are the grid's axes (the defaults above
+            # are for the other models; e.g. tau_V <= 12 would cut the grid's 0.01-60).
+            # Narrow them afterwards through n.bounds if needed.
             for k, par in zip(self.model.AXES, self.grid_params):
                 self.bounds[par] = [float(self.model.axes[k].min()), float(self.model.axes[k].max())]
             self.bounds['luminosity'] = list(self.model.LOGL_RANGE)
