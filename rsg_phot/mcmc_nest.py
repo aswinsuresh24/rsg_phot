@@ -47,6 +47,12 @@ class nest(object):
     instance runs DUSTY on the fly instead: its free parameters are sampled (under the
     mcmc names below), extinction is applied to the model SED, and synthetic photometry
     uses the JWST bandpasses (or the bandpasses passed in, e.g. for HST filters).
+    model = a rsg_phot.dust.DustyGrid (or the path to its .npz) samples the precomputed
+    DUSTY grid instead, in (temperature, dust_temp, tau_V, s, Y, luminosity), with
+    bounds from the grid axes and log L in DustyGrid.LOGL_RANGE. The grid band names
+    must match phot['inst_filt']. Its photometry is unreddened, so extinction is
+    applied per band at the bandpass pivot wavelength, which differs from reddening
+    the SED by < 0.01 mag per magnitude of A_V for these bands.
 
     space = 'mag' fits AB magnitudes with a Gaussian likelihood in magnitude, like mcmc.
     space = 'flux' fits F_nu in uJy: Gaussian for detections and a censored term,
@@ -70,7 +76,10 @@ class nest(object):
     '''
     # dusty_likelihood parameter names -> mcmc parameter names
     DUSTY_NAMES = {'logl': 'luminosity', 'temp': 'temperature', 'dust_temp': 'dust_temp',
-                   'tau': 'tau_V', 'shell_thickness': 'shell_thickness'}
+                   'tau': 'tau_V', 'shell_thickness': 'shell_thickness', 'u': 'u'}
+    # DustyGrid axis names -> mcmc parameter names (s: power-law index of rho ~ r^-s;
+    # Y: relative shell thickness R_out/R_in)
+    GRID_NAMES = {'temp': 'temperature', 'dust_temp': 'dust_temp', 'tau': 'tau_V', 's': 's', 'Y': 'Y'}
     # value returned for failed/out-of-grid models (dynesty prefers finite values to -inf)
     LOGL_FAIL = -1e300
 
@@ -85,6 +94,8 @@ class nest(object):
             'Av': [0.0, 5.0],
             'Rv': [2.0, 6.0],
             'shell_thickness': [2.0, 1e4],
+            # exponential mass-loss shape of dusty_likelihood(density='exp'), u = R_in/(v t_e)
+            'u': [-0.1, 2.0],
         }
         self.mode = mode.lower()
         if self.mode not in MODE_FILTS:
@@ -119,6 +130,17 @@ class nest(object):
                 self.model = pickle.load(f)
             self.model_fit_params = ['temperature', 'dust_temp', 'tau_V', 'luminosity'] + ext_params
             self.tag = f'{model_type}_{comp}_{self.mode}'
+        elif isinstance(model, (str, Path, rsg_phot.dust.DustyGrid)):
+            self.model_kind = 'dustygrid'
+            self.model = model if isinstance(model, rsg_phot.dust.DustyGrid) else rsg_phot.dust.DustyGrid(model)
+            self.grid_params = [self.GRID_NAMES[k] for k in self.model.AXES]
+            self.model_fit_params = self.grid_params + ['luminosity'] + ext_params
+            for k, par in zip(self.model.AXES, self.grid_params):
+                self.bounds[par] = [float(self.model.axes[k].min()), float(self.model.axes[k].max())]
+            self.bounds['luminosity'] = list(self.model.LOGL_RANGE)
+            self.bandpasses = bandpasses
+            self._rp = None
+            self.tag = f'dustygrid_{Path(self.model.gridfile).stem}'
         else:
             self.model_kind = 'dusty'
             self.model = model
@@ -145,6 +167,10 @@ class nest(object):
             self.priors['Av'] = 'truncexpon'
         if 'shell_thickness' in self.priors:
             self.priors['shell_thickness'] = 'log'
+        if self.model_kind == 'dustygrid':
+            # the grid spans 0.01-60 in tau and 10-1e4 in Y, so sample both in log
+            self.priors['tau_V'] = 'log'
+            self.priors['Y'] = 'log'
 
     def prior_transform(self, u_):
         # map the unit cube onto the parameters
@@ -189,6 +215,12 @@ class nest(object):
             params = np.meshgrid(*[p[k] for k in ['temperature', 'dust_temp', 'tau_V', 'luminosity']], rv, av,
                                  indexing='ij', sparse=True)
             return np.array([self.model[f](params).flatten()[0] for f in self.phot['inst_filt']]) + self.dm
+        if self.model_kind == 'dustygrid':
+            flux = self.model.phot(p['luminosity'], *[p[k] for k in self.grid_params],
+                                   dist=self.distance[0] * u.Mpc)[self._gidx]
+            if av > 0:
+                flux = flux * self._rp.extinction_law(self._pivots, av, rv)
+            return flux_to_mag(flux)
 
         sed = self.model.model_sed([p[self.DUSTY_NAMES[k]] for k in self.dusty_params])
         if av > 0:
@@ -265,6 +297,16 @@ class nest(object):
             if missing:
                 raise ValueError(f'Filters {missing} are not in the {self.mode} model grid '
                                  f'{self.dirs["model_grid"]}; use mode="miri" to fit MIRI photometry')
+        elif self.model_kind == 'dustygrid':
+            missing = [f for f in phot['inst_filt'] if f not in self.model.bands]
+            if missing:
+                raise ValueError(f'Filters {missing} are not in the DUSTY grid {self.model.gridfile} '
+                                 f'(bands {self.model.bands})')
+            self._gidx = np.array([self.model.bands.index(f) for f in phot['inst_filt']])
+            # pivot wavelengths (Angstrom) for the per-band extinction
+            if self.ext is None or self.ext[1] > 0:
+                bps = self.get_bandpasses(list(phot['inst_filt']))
+                self._pivots = np.array([bps[f].pivot().to(u.Angstrom).value for f in phot['inst_filt']])
         else:
             self._bps = self.get_bandpasses(list(phot['inst_filt']))
         self.phot = phot
