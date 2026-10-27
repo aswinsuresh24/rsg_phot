@@ -7,6 +7,7 @@ data/rsg*
 examples/
 .vscode/
 jwstrsg-vault/
+2026sqf_tmp/
 PKG-INFO
 *csv
 *md
