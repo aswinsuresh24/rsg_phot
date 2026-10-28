@@ -55,6 +55,9 @@ def create_parser():
         g.add_argument(f'--{name}', type=float, nargs='+', default=None, help=f'{k} axis (default {SHELL_GRID_AXES[k].tolist()})')
     g.add_argument('--nproc', type=int, default=10, help='Parallel DUSTY processes')
     g.add_argument('--retry_failed', default=False, action='store_true', help='Rerun cells whose DUSTY run failed as a whole')
+    g.add_argument('--save_sed', default=False, action='store_true',
+                   help='Also store the full DUSTY spectrum of every model (fnu in uJy at --dist for 1e4 Lsun, as sed and '
+                        'sed_lambda), e.g. as input spectra for an outer shell; ~120 MB for the default grid')
     g.add_argument('--workdir', type=str, default='data/dusty_grid/work_shell',
                    help='DUSTY working directories (keep the path short: DUSTY has fixed-length file names)')
     return parser
@@ -1736,4 +1739,5 @@ if __name__ == '__main__':
         Path(args.out).parent.mkdir(parents=True, exist_ok=True)
         print(' | '.join(f'{k}: {list(np.round(v, 5))}' for k, v in axes.items()), flush=True)
         builder.build_grid(args.out, bandpasses, temps=axes['temp'], dust_temps=axes['dust_temp'], taus=axes['tau'],
-                           ss=axes['s'], Ys=axes['Y'], nproc=args.nproc, retry_failed=args.retry_failed)
+                           ss=axes['s'], Ys=axes['Y'], nproc=args.nproc, retry_failed=args.retry_failed,
+                           save_sed=args.save_sed)
