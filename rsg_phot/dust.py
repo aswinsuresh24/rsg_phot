@@ -60,14 +60,16 @@ def create_parser():
     return parser
 
 # Coarse single-shell grid (amC + SiC, MRN q 3.5, 0.005-0.25 um, COMARCS) for showing that one spherical shell cannot fit
-# SN 2026sqf. PCHIP accuracy (hold-out tests, see default_grid_axes): temp 200 K steps <= 0.04 mag; dust_temp x1.19 steps
-# (~120 K at 700 K, 100 K gave 0.03 mag); tau 0.15 dex <= 0.011 mag; s 0.5 and Y ~0.5-1 dex coarser than tested, so check
-# them with validate_grid on posterior draws
+# SN 2026sqf. PCHIP accuracy from hold-out cuts at Teff 4000 (2026sqf_tmp/shell_grid_holdout.py): temp 200 K steps <= 0.04
+# mag (default_grid_axes); dust_temp x1.19 steps <= 0.017 mag, so x1.29 here is expected at ~0.05 mag (<= 0.3 sigma);
+# tau 0.15 dex <= 0.011 mag; s at 1.0 steps <= 0.07 mag NIRCam, 0.15 mag mid-IR, so ~4x less at 0.5; Y with 1.5, 3, 10,
+# 100, 1e4 reached 0.2 mag mid-IR (0.32 at F2550W) in the 10-100 and 100-1e4 gaps, filled here by 30 and 1000. Check the
+# grid with validate_grid on posterior draws
 SHELL_GRID_AXES = {'temp': np.arange(2600., 4400. + 1e-6, 200.),
-                   'dust_temp': np.round(np.geomspace(150., 1500., 14)),
+                   'dust_temp': np.round(np.geomspace(150., 1500., 10)),
                    'tau': np.round(np.logspace(-1, 2, 21), 5),
                    's': np.array([1., 1.5, 2., 2.5]),
-                   'Y': np.array([1.5, 3., 10., 100., 1e4])}
+                   'Y': np.array([1.5, 3., 10., 30., 100., 1000., 1e4])}
 class dusty_gen(object):
     def __init__(self, 
                  dist=10*u.Mpc, 
