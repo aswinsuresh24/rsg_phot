@@ -2,7 +2,7 @@ import numpy as np
 import synphot
 from synphot import SpectralElement
 from synphot.models import Empirical1D
-import os, glob
+import os, glob, re, argparse
 import rsg_phot.dust
 import sys
 import astropy.units as u
@@ -207,10 +207,12 @@ class nest(object):
         for f in filts:
             if f in bps:
                 continue
+            # MIRI filters also by their short names (F560W for F0560W), as in the DUSTY grids
+            miri = f'F{int(f[1:-1]):04d}W' if re.fullmatch(r'F\d{3,4}W', f) else f
             if f in NRC_FILTS:
                 bps[f] = self._rp.get_jwst_filters(f'nircam,{f}')
-            elif f in MIRI_FILTS:
-                bps[f] = self._rp.get_jwst_filters(f'miri,{f}')
+            elif miri in MIRI_FILTS:
+                bps[f] = self._rp.get_jwst_filters(f'miri,{miri}')
             else:
                 raise ValueError(f'No bandpass for {f}: pass it in bandpasses (e.g. HST filters from stsynphot.band)')
         return {f: bps[f] for f in filts}
@@ -382,3 +384,76 @@ class nest(object):
         if self.verbose:
             print(f'log Z = {self.evidence[0]:.3f} +/- {self.evidence[1]:.3f}')
         return params
+
+def sn2026sqf_phot(path, exclude=('F187N', 'F405N')):
+    '''
+    Photometry dict for nest (space='flux') from an SN 2026sqf photometry table
+    (data/dolphot/sn2026sqf/sn2026sqf_photometry_*_ujy.txt): detections with err_ujy,
+    and the non-detections as upper limits at ul_ujy (sigma = ul / nsigma_lim, set by
+    nest). exclude drops bands, by default the Pa alpha and Br alpha narrow bands.
+    '''
+    from astropy.io import ascii
+    tb = ascii.read(path, format='csv', comment=r'\s*#', header_start=0, data_start=1)
+    filt = np.array([str(f) for f in tb['filter']])
+    det = np.asarray(tb['detected']).astype(str) == 'True'
+    flux = np.where(det, np.ma.filled(np.ma.asarray(tb['flux_ujy'], float), np.nan),
+                    np.ma.filled(np.ma.asarray(tb['ul_ujy'], float), np.nan))
+    err = np.where(det, np.ma.filled(np.ma.asarray(tb['err_ujy'], float), np.nan), np.nan)
+    keep = ~np.isin(filt, list(exclude)) & np.isfinite(flux)
+    return {'index': 'sn2026sqf', 'inst_filt': filt[keep], 'flux': flux[keep], 'fluxerr': err[keep], 'uplim': ~det[keep]}
+
+def chi2_radmc(phot, model, floor=0.05, nsigma_lim=3.0):
+    '''
+    chi^2 as used to score the RADMC-3D models (2026sqf_tmp/evol_fit.chi2): detections
+    with sigma = err (+) floor * observed flux, and limits one-sided, penalised only
+    above the limit with sigma = limit / nsigma_lim. For comparing the best fit here
+    with those models; the nested sampling likelihood itself is nest.log_likelihood.
+    '''
+    det, lim = ~phot['uplim'], phot['uplim']
+    sig = np.hypot(phot['fluxerr'][det], floor * phot['flux'][det])
+    over = np.clip(model[lim] - phot['flux'][lim], 0, None) / (phot['flux'][lim] / nsigma_lim)
+    return np.sum(((phot['flux'][det] - model[det]) / sig)**2) + np.sum(over**2)
+
+if __name__ == '__main__':
+    # nested sampling of an SN 2026sqf SED with a DUSTY grid from dust.py (e.g. the single-shell
+    # grid), interpolated on the fly by DustyGrid (tensor-product PCHIP). Run from the repo root:
+    #   python -m rsg_phot.mcmc_nest --npool 8
+    ap = argparse.ArgumentParser(description='Nested sampling of SN 2026sqf with a DUSTY grid')
+    ap.add_argument('--grid', default='data/dusty_grids/2026sqf/shell_amC_SiC20.npz', help='DustyGrid .npz')
+    ap.add_argument('--phot', default='data/dolphot/sn2026sqf/sn2026sqf_photometry_new_ujy.txt', help='photometry table')
+    ap.add_argument('--exclude', nargs='*', default=['F187N', 'F405N'], help='bands left out of the fit')
+    ap.add_argument('--dist', type=float, nargs=2, default=[19.0, 1.5], metavar=('D', 'ERR'), help='distance and error (Mpc)')
+    ap.add_argument('--ext', type=float, nargs=2, default=[3.1, 0.125], metavar=('RV', 'AV'),
+                    help='fixed extinction, MW + host (applied per band at the bandpass pivots)')
+    ap.add_argument('--sys_frac', type=float, default=0.05, help='fractional model error added in quadrature')
+    ap.add_argument('--nlive', type=int, default=500)
+    ap.add_argument('--dlogz', type=float, default=0.1)
+    ap.add_argument('--npool', type=int, default=1, help='processes for the likelihood')
+    ap.add_argument('--seed', type=int, default=1)
+    ap.add_argument('--backends', default='data/backends', help='directory for the results pickle')
+    args = ap.parse_args()
+
+    d, de = args.dist
+    dm, dmerr = 5*np.log10(d*1e6) - 5, 5/np.log(10) * de/d
+    n = nest(model=args.grid, ext=tuple(args.ext), dm=dm, dmerr=dmerr, space='flux', sys_frac=args.sys_frac)
+    n.verbose = True
+    n.dirs['backends'] = Path(args.backends)
+    # T_in nodes are geometric (150-1500 K), so sample it in log like tau_V and Y
+    n.priors['dust_temp'] = 'log'
+    phot = sn2026sqf_phot(args.phot, exclude=args.exclude)
+    print(f'grid {args.grid}: {n.model_fit_params}')
+    print(f'bands {", ".join(phot["inst_filt"])}; limits {", ".join(phot["inst_filt"][phot["uplim"]])}')
+    print('bounds ' + ', '.join(f'{p} {n.bounds[p]} ({n.priors[p]})' for p in n.model_fit_params), flush=True)
+
+    t0 = time.time()
+    params = n.run_nested(phot, nlive=args.nlive, dlogz=args.dlogz, npool=args.npool, seed=args.seed)
+    res = n.results
+    best = res.samples[np.argmax(res.logl)]
+    model = n.model_flux(best)
+    print(f'\n{res.ncall.sum() if hasattr(res.ncall, "sum") else res.ncall} likelihood calls, {(time.time() - t0)/60:.1f} min')
+    print('maximum likelihood: ' + ', '.join(f'{p} {v:.4g}' for p, v in zip(n.model_fit_params, best)))
+    print(f'  log L_max {res.logl.max():.2f}; RADMC-style chi2 {chi2_radmc(n.phot, model):.1f} '
+          f'({(~n.phot["uplim"]).sum()} detections + {n.phot["uplim"].sum()} limits)')
+    for f, o, e, m, ul in zip(n.phot['inst_filt'], n.phot['flux'], n.phot['fluxerr'], model, n.phot['uplim']):
+        print(f'  {f:>7} obs {o:8.3f} {"(limit)" if ul else f"+/- {e:6.3f}":>10}  model {m:8.3f}')
+    print(f'results: {n.results_file(n.phot)}')

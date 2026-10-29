@@ -55,6 +55,8 @@ def create_parser():
         g.add_argument(f'--{name}', type=float, nargs='+', default=None, help=f'{k} axis (default {SHELL_GRID_AXES[k].tolist()})')
     g.add_argument('--nproc', type=int, default=10, help='Parallel DUSTY processes')
     g.add_argument('--retry_failed', default=False, action='store_true', help='Rerun cells whose DUSTY run failed as a whole')
+    g.add_argument('--merge', type=str, nargs='+', default=None, metavar='NPZ',
+                   help='Instead of building, merge these assembled grids (differing only in their s nodes) into --out')
     g.add_argument('--save_sed', default=False, action='store_true',
                    help='Also store the full DUSTY spectrum of every model (fnu in uJy at --dist for 1e4 Lsun, as sed and '
                         'sed_lambda), e.g. as input spectra for an outer shell; ~120 MB for the default grid')
@@ -1455,6 +1457,63 @@ def assemble_grid(outfile):
           f'{meta["cpu_hours"]:.1f} CPU hours')
     return outfile
 
+def merge_grids(files, outfile, axis='s'):
+    '''
+    Merge assembled grids (from build_grid / assemble_grid) that differ only in the
+    nodes of one axis, e.g. a grid at s = 0.25-0.75 built after one at s = 1-2.5, into
+    one grid sorted along that axis. Everything else must match: the other axes, bands,
+    distance, photosphere, dust, density law and whether SEDs were saved (the DUSTY and
+    .nk paths may differ between machines). Node values on the merged axis must not
+    repeat. Writes outfile in the assemble_grid format, which DustyGrid reads as usual.
+    '''
+    if axis not in DustyGrid.AXES:
+        raise ValueError(f'axis must be one of {DustyGrid.AXES}')
+    k = DustyGrid.AXES.index(axis)
+    grids = [np.load(f) for f in files]
+    metas = [json.loads(str(g['meta'])) for g in grids]
+
+    def config(m):
+        # what has to agree: the configuration without run counts, machine paths and the merged axis
+        c = {key: v for key, v in m.items() if key not in ('axes', 'n_ok', 'n_failed', 'n_missing', 'cpu_hours',
+                                                           'dusty_path', 'merged_from')}
+        c['axes'] = {a: v for a, v in m['axes'].items() if a != axis}
+        inner = dict(c['meta'])
+        inner['nk_comp'] = {os.path.basename(f): x for f, x in (inner.get('nk_comp') or {}).items()}
+        c['meta'] = inner
+        return json.dumps(c, sort_keys=True, default=float)
+    ref = config(metas[0])
+    for f, m in zip(files[1:], metas[1:]):
+        if config(m) != ref:
+            raise ValueError(f'{f} differs from {files[0]} in more than its {axis} nodes')
+    has_sed = ['sed' in g.files for g in grids]
+    if any(has_sed) and not all(has_sed):
+        raise ValueError('either all or none of the grids must hold SEDs (save_sed)')
+    if all(has_sed) and any(not np.array_equal(g['sed_lambda'], grids[0]['sed_lambda']) for g in grids[1:]):
+        raise ValueError('the grids have different SED wavelength grids')
+
+    nodes = np.concatenate([g[axis] for g in grids])
+    if len(np.unique(nodes)) != len(nodes):
+        raise ValueError(f'repeated {axis} nodes: {np.sort(nodes)}')
+    order = np.argsort(nodes)
+    out = {a: grids[0][a] for a in DustyGrid.AXES}
+    out[axis] = nodes[order]
+    for key in ['phot', 'r1', 'err', 'td_y', 'warn', 'status'] + (['sed'] if all(has_sed) else []):
+        out[key] = np.take(np.concatenate([g[key] for g in grids], axis=k), order, axis=k)
+    if all(has_sed):
+        out['sed_lambda'] = grids[0]['sed_lambda']
+
+    meta = dict(metas[0])
+    meta['axes'] = {a: np.asarray(out[a]).tolist() for a in DustyGrid.AXES}
+    meta.update({'n_ok': int((out['status'] == GRID_OK).sum()), 'n_failed': int((out['status'] == GRID_FAILED).sum()),
+                 'n_missing': int((out['status'] == GRID_MISSING).sum()),
+                 'cpu_hours': float(sum(m.get('cpu_hours', 0.0) for m in metas)),
+                 'merged_from': [str(f) for f in files]})
+    out['meta'] = json.dumps(meta, default=float)
+    np.savez(outfile, **out)
+    print(f'{outfile}: merged {len(files)} grids along {axis} = {out[axis].tolist()}; {meta["n_ok"]} models ok, '
+          f'{meta["n_failed"]} failed, {meta["n_missing"]} missing')
+    return outfile
+
 def _pchip_edge(h0, h1, m0, m1):
     # one-sided three-point end slope, as in scipy.interpolate.PchipInterpolator
     d = ((2*h0 + h1)*m0 - h0*m1) / (h0 + h1)
@@ -1719,6 +1778,8 @@ if __name__ == '__main__':
         dustgen.dust_comp = comp
 
         dustgen.gen_grid(redo_dusty=False, redo_input=False, tb_overwrite=True)
+    elif args.merge:
+        merge_grids(args.merge, args.out, axis='s')
     else:
         from rsg_phot.rsg import rsg_phot
         q, amin, amax = args.size
