@@ -49,7 +49,9 @@ class nest(object):
     uses the JWST bandpasses (or the bandpasses passed in, e.g. for HST filters).
     model = a rsg_phot.dust.DustyGrid (or the path to its .npz) samples the precomputed
     DUSTY grid instead, in (temperature, dust_temp, tau_V, s, Y, luminosity), with
-    bounds from the grid axes and log L in DustyGrid.LOGL_RANGE. The grid band names
+    bounds from the grid axes and log L in DustyGrid.LOGL_RANGE; a wind + shell grid
+    (rsg_phot.dust_twoshell.TwoShellGrid, chosen from the .npz metadata) is sampled in its
+    own axes (dust_temp, tau_V, f_wind, y_shell, gap, Y_shell, luminosity). The grid band names
     must match phot['inst_filt']. Its photometry is unreddened, so extinction is
     applied per band at the bandpass pivot wavelength, which differs from reddening
     the SED by < 0.01 mag per magnitude of A_V for these bands.
@@ -76,7 +78,7 @@ class nest(object):
     '''
     # dusty_likelihood parameter names -> mcmc parameter names
     DUSTY_NAMES = {'logl': 'luminosity', 'temp': 'temperature', 'dust_temp': 'dust_temp',
-                   'tau': 'tau_V', 'shell_thickness': 'shell_thickness', 'u': 'u'}
+                   'tau': 'tau_V', 'shell_thickness': 'shell_thickness'}
     # DustyGrid axis names -> mcmc parameter names (s: power-law index of rho ~ r^-s;
     # Y: relative shell thickness R_out/R_in)
     GRID_NAMES = {'temp': 'temperature', 'dust_temp': 'dust_temp', 'tau': 'tau_V', 's': 's', 'Y': 'Y'}
@@ -94,8 +96,6 @@ class nest(object):
             'Av': [0.0, 5.0],
             'Rv': [2.0, 6.0],
             'shell_thickness': [2.0, 1e4],
-            # exponential mass-loss shape of dusty_likelihood(density='exp'), u = R_in/(v t_e)
-            'u': [-0.1, 2.0],
             # DustyGrid power-law index (rho ~ r^-s) and relative thickness Y = R_out/R_in,
             # over the default grid; with a DustyGrid model all the grid parameters take
             # the grid's own axis ranges
@@ -137,8 +137,12 @@ class nest(object):
             self.tag = f'{model_type}_{comp}_{self.mode}'
         elif isinstance(model, (str, Path, rsg_phot.dust.DustyGrid)):
             self.model_kind = 'dustygrid'
-            self.model = model if isinstance(model, rsg_phot.dust.DustyGrid) else rsg_phot.dust.DustyGrid(model)
-            self.grid_params = [self.GRID_NAMES[k] for k in self.model.AXES]
+            if not isinstance(model, rsg_phot.dust.DustyGrid):
+                from rsg_phot.dust_twoshell import load_grid
+                model = load_grid(model)
+            self.model = model
+            # axes without an mcmc name (the wind + shell geometry) keep their own
+            self.grid_params = [self.GRID_NAMES.get(k, k) for k in self.model.AXES]
             self.model_fit_params = self.grid_params + ['luminosity'] + ext_params
             # the bounds of the grid parameters are the grid's axes (the defaults above
             # are for the other models; e.g. tau_V <= 12 would cut the grid's 0.01-60).

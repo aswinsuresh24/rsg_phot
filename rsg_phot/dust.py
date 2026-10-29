@@ -556,53 +556,6 @@ class DustyError(RuntimeError):
     '''
     pass
 
-# ----------------------------------------------------------------------------
-# Exponential mass-loss density family (see DUSTY_Grid_Design.md)
-#
-# A constant-velocity wind with Mdot(t) ~ exp(t/t_e) has, in y = r/R_in,
-#     rho(y) ~ y^-2 exp[-u (y - 1)],    u = R_in / (v t_e)
-# u > 0 is rising mass loss (steeper than r^-2), u = 0 constant (pure r^-2) and
-# u < 0 falling mass loss (shallower). Single models only (dusty_likelihood
-# density='exp'); the precomputed grids use power laws (see build_grid).
-
-# DUSTY aborts when eta_min/eta_max < 1e-12 anywhere in the shell; keep a margin
-ETA_FLOOR = 1e-11
-def exp_density_ymax(u_, Y, floor=ETA_FLOOR):
-    '''
-    Outer radius DUSTY can handle for the exponential profile. For rising mass loss
-    (u > 0) eta falls below floor * eta(1) before Y once 2 ln y + u (y - 1) > -ln(floor),
-    and DUSTY then aborts. The dust beyond that radius holds a fraction ~ floor of tau,
-    so the profile is truncated there (Y_eff); for u <= 0 the full Y is kept.
-    '''
-    from scipy.optimize import brentq
-    f = lambda y: -2*np.log(y) - u_*(y - 1) - np.log(floor)
-    if f(Y) >= 0:
-        return float(Y)
-    return brentq(f, 1.0, Y, xtol=1e-6, rtol=1e-10)
-
-def exp_density_profile(u_, Y, npts=300, floor=ETA_FLOOR):
-    '''
-    Tabulated (y, eta) for DUSTY's user-supplied density (input density type 5), and
-    the effective outer radius Y_eff (see exp_density_ymax). The table merges a
-    log-spaced and a linear-spaced grid, since DUSTY interpolates it linearly: the
-    log spacing resolves the y^-2 fall near R_in and the linear spacing the
-    exponential rise near R_out for u < 0. DUSTY allows at most 1000 rows.
-    '''
-    if Y <= 1:
-        raise ValueError('Y = R_out/R_in must be > 1')
-    if 2*npts > 1000:
-        raise ValueError('DUSTY reads at most 1000 density points (npts <= 500)')
-    Y_eff = exp_density_ymax(u_, Y, floor)
-    y = np.unique(np.concatenate([np.geomspace(1.0, Y_eff, npts), np.linspace(1.0, Y_eff, npts)]))
-    # eta relative to its maximum, so the table never underflows for u < 0
-    log_eta = -2*np.log(y) - u_*(y - 1)
-    log_eta -= log_eta.max()
-    # truncated profiles end at the floor itself
-    if log_eta.min() < np.log(floor) - 1e-6:
-        raise ValueError(f'Density contrast of u={u_}, Y={Y} exceeds DUSTY\'s dynamic range '
-                         f'(eta_min/eta_max = {np.exp(log_eta.min()):.1e})')
-    return y, np.exp(log_eta), Y_eff
-
 class dusty_likelihood(dusty_gen):
     '''
     Run single DUSTY models on the fly, so that the output SED can be used directly
@@ -621,14 +574,12 @@ class dusty_likelihood(dusty_gen):
         tau             : optical depth at 0.55 micron
         shell_thickness : relative shell thickness Y = R_out/R_in (fixed at 1e4 by default;
                           pass shell_thickness=None to sample it)
-        u               : only for density='exp', the exponential mass-loss shape
-                          rho ~ y^-2 exp[-u (y-1)], u = R_in/(v t_e) (see exp_density_profile)
 
     For precomputed grids over (temp, dust_temp, tau, s, Y), with rho ~ r^-s, see
     build_grid and DustyGrid.
     '''
     PARAM_NAMES = ['logl', 'temp', 'dust_temp', 'tau', 'shell_thickness']
-    DENSITIES = ('rdw', 'powerlaw', 'exp')
+    DENSITIES = ('rdw', 'powerlaw')
 
     # Built-in DUSTY grain types, in the column order of the input file
     DUSTY_GRAINS = ['Sil-Ow', 'Sil-Oc', 'Sil-DL', 'grf-DL', 'amC-Hn', 'SiC-Pg']
@@ -690,11 +641,9 @@ class dusty_likelihood(dusty_gen):
             self.size_par.update(size_par)
         self.density = density.lower()
         if self.density not in self.DENSITIES:
-            raise ValueError('density must be "rdw" (analytic radiatively driven wind), "powerlaw" '
-                             'or "exp" (r^-2 x exponential mass-loss history)')
+            raise ValueError('density must be "rdw" (analytic radiatively driven wind) or "powerlaw"')
         self.density_power = density_power
-        # the exponential family adds the shape parameter u
-        self.param_names = self.PARAM_NAMES + (['u'] if self.density == 'exp' else [])
+        self.param_names = list(self.PARAM_NAMES)
 
         # required fractional accuracy of bolometric flux conservation (DUSTY q_acc).
         # DUSTY reports errors < 1% as 0, so the post-run check only bites for accuracy >= 0.01
@@ -780,7 +729,7 @@ class dusty_likelihood(dusty_gen):
                              f'({self.rsg_temp.value.min()}-{self.rsg_temp.value.max()} K)')
         if p['tau'] <= 0:
             raise ValueError('tau must be positive (DUSTY fails at tau = 0)')
-        if p['shell_thickness'] <= 1:
+        if 'shell_thickness' in p and p['shell_thickness'] <= 1:
             raise ValueError('shell_thickness (Y = R_out/R_in) must be > 1')
 
         return p
@@ -851,11 +800,6 @@ class dusty_likelihood(dusty_gen):
         if self.density == 'rdw':
             lines.append('        - density type = 4\n')
             lines.append(f'        - Y = {p['shell_thickness']}\n\n')
-        elif self.density == 'exp':
-            # input density type 5 reads a (y, eta) table from file; DUSTY takes Y
-            # from its last row (see write_density_file)
-            lines.append('        - density type = 5\n')
-            lines.append(f'            {p['eta_file']}\n\n')
         else:
             lines.append('        - density type = 1\n')
             lines.append('        - number of powers = 1\n')
@@ -863,19 +807,6 @@ class dusty_likelihood(dusty_gen):
             lines.append(f'        - power = {p.get('density_power', self.density_power)}\n\n')
 
         return ''.join(lines)
-
-    def write_density_file(self, p, workdir):
-        # tabulated exponential mass-loss profile for density type 5. Rising profiles
-        # are truncated where eta reaches DUSTY's dynamic range; p['Y_eff'] records it
-        y, eta, p['Y_eff'] = exp_density_profile(p['u'], p['shell_thickness'])
-        p['eta_file'] = os.path.join(workdir, 'model.eta')
-        with open(p['eta_file'], 'w') as f:
-            f.write(f'# rho ~ y^-2 exp[-u (y-1)], u = {p['u']}, Y = {p['shell_thickness']}, '
-                    f'Y_eff = {p['Y_eff']}\n#   y   eta (relative)\n#\n')
-            np.savetxt(f, np.c_[y, eta], fmt='%.8e')
-        # FileMSG in dustyV2.f reads file names into a CHARACTER*230
-        if len(p['eta_file']) >= 230:
-            raise ValueError(f'Path to {p['eta_file']} is too long for DUSTY (>= 230 characters)')
 
     def write_tau_file(self, taus, workdir):
         # tau grid for grid type 3. DUSTY sorts it and segfaults on a single entry
@@ -1009,8 +940,6 @@ class dusty_likelihood(dusty_gen):
         msgfile = basename + '.m001'
         self.clear_dusty_outputs(basename)
 
-        if self.density == 'exp':
-            self.write_density_file(p, workdir)
         self.setup_dusty_single(inp_file, p)
         with open(os.path.join(workdir, 'dusty.inp'), 'w') as f:
             f.write(basename)
@@ -1021,8 +950,6 @@ class dusty_likelihood(dusty_gen):
 
         results = self.read_dusty_results(outfile)
         results['warnings'] = self.check_dusty_status(outfile, msgfile, results, p)
-        if 'Y_eff' in p:
-            results['Y_eff'] = p['Y_eff']
         spec = self.read_dusty_spec(specfile)
 
         if not self.keep_files:
@@ -1054,8 +981,6 @@ class dusty_likelihood(dusty_gen):
         inp_file, outfile = basename + '.inp', basename + '.out'
         self.clear_dusty_outputs(basename)
 
-        if self.density == 'exp':
-            self.write_density_file(p, workdir)
         p['tau_file'] = self.write_tau_file(taus, workdir)
         self.setup_dusty_single(inp_file, p)
         with open(os.path.join(workdir, 'dusty.inp'), 'w') as f:
@@ -1078,8 +1003,6 @@ class dusty_likelihood(dusty_gen):
             model = i + 1
             res = dict(rows.get(model, {}))
             res['tau'] = tau
-            if 'Y_eff' in p:
-                res['Y_eff'] = p['Y_eff']
             res['warnings'] = model in warnings
             specfile = f'{basename}.s{model:03d}'
             if model not in rows:
@@ -1128,8 +1051,6 @@ class dusty_likelihood(dusty_gen):
                 'accuracy': self.accuracy}
         if self.density == 'powerlaw':
             meta['density_power'] = self.density_power
-        if self.density == 'exp':
-            meta['eta_floor'] = ETA_FLOOR
         return meta
 
     def model_sed(self, theta):
@@ -1214,13 +1135,17 @@ class dusty_likelihood(dusty_gen):
         r1, flux conservation error and Td(Y) for every tau. Failed models are NaN
         with ok = False; a failed run leaves the whole cell NaN with 'msg' set.
         '''
+        p = {'logl': self.GRID_LOGL, 'temp': temp, 'dust_temp': dust_temp, 'shell_thickness': Y,
+             'density_power': s}
+        return self.sequence_cell(p, taus, bandpasses, save_sed)
+
+    def sequence_cell(self, p, taus, bandpasses, save_sed=False):
+        # grid_cell for any parameter dict p (without tau): photometry etc. over the tau sequence
         taus = np.sort(np.asarray(taus, dtype=float))
         nt, nb = len(taus), len(bandpasses)
         out = {'phot': np.full((nt, nb), np.nan), 'r1': np.full(nt, np.nan), 'err': np.full(nt, np.nan),
                'td_y': np.full(nt, np.nan), 'ok': np.zeros(nt, bool), 'warn': np.zeros(nt, bool),
                'msg': '', 'runtime': 0.0}
-        p = {'logl': self.GRID_LOGL, 'temp': temp, 'dust_temp': dust_temp, 'shell_thickness': Y,
-             'density_power': s}
         t0 = time.time()
         try:
             seq = self.run_dusty_sequence(p, taus)
@@ -1355,6 +1280,18 @@ class dusty_likelihood(dusty_gen):
         meta.pop('density_power', None)
         return meta
 
+def table_bandpasses(phot):
+    # grid bands: every filter of a photometry table (filter, instrument columns), as
+    # synphot bandpasses; pandeia names the MIRI filters F0560W etc.
+    from rsg_phot.rsg import rsg_phot
+    tb = ascii.read(phot, format='csv', comment=r'\s*#', header_start=0, data_start=1)
+    rp = rsg_phot(verbose=False)
+    bandpasses = {}
+    for f, inst in zip(tb['filter'], tb['instrument']):
+        f, inst = str(f), str(inst).lower()
+        bandpasses[f] = rp.get_jwst_filters(f'{inst},{f if inst == "nircam" else f"F{int(f[1:-1]):04d}W"}')
+    return bandpasses
+
 def bandpass_tables(bandpasses):
     # {name: (wavelength in Angstrom, throughput)} of the tapered bandpasses
     out = {}
@@ -1457,7 +1394,7 @@ def assemble_grid(outfile):
           f'{meta["cpu_hours"]:.1f} CPU hours')
     return outfile
 
-def merge_grids(files, outfile, axis='s'):
+def merge_grids(files, outfile, axis='s', grid_axes=None):
     '''
     Merge assembled grids (from build_grid / assemble_grid) that differ only in the
     nodes of one axis, e.g. a grid at s = 0.25-0.75 built after one at s = 1-2.5, into
@@ -1465,10 +1402,12 @@ def merge_grids(files, outfile, axis='s'):
     distance, photosphere, dust, density law and whether SEDs were saved (the DUSTY and
     .nk paths may differ between machines). Node values on the merged axis must not
     repeat. Writes outfile in the assemble_grid format, which DustyGrid reads as usual.
+    grid_axes is the grids' axis order (default DustyGrid.AXES).
     '''
-    if axis not in DustyGrid.AXES:
-        raise ValueError(f'axis must be one of {DustyGrid.AXES}')
-    k = DustyGrid.AXES.index(axis)
+    grid_axes = tuple(grid_axes or DustyGrid.AXES)
+    if axis not in grid_axes:
+        raise ValueError(f'axis must be one of {grid_axes}')
+    k = grid_axes.index(axis)
     grids = [np.load(f) for f in files]
     metas = [json.loads(str(g['meta'])) for g in grids]
 
@@ -1495,7 +1434,7 @@ def merge_grids(files, outfile, axis='s'):
     if len(np.unique(nodes)) != len(nodes):
         raise ValueError(f'repeated {axis} nodes: {np.sort(nodes)}')
     order = np.argsort(nodes)
-    out = {a: grids[0][a] for a in DustyGrid.AXES}
+    out = {a: grids[0][a] for a in grid_axes}
     out[axis] = nodes[order]
     for key in ['phot', 'r1', 'err', 'td_y', 'warn', 'status'] + (['sed'] if all(has_sed) else []):
         out[key] = np.take(np.concatenate([g[key] for g in grids], axis=k), order, axis=k)
@@ -1503,7 +1442,7 @@ def merge_grids(files, outfile, axis='s'):
         out['sed_lambda'] = grids[0]['sed_lambda']
 
     meta = dict(metas[0])
-    meta['axes'] = {a: np.asarray(out[a]).tolist() for a in DustyGrid.AXES}
+    meta['axes'] = {a: np.asarray(out[a]).tolist() for a in grid_axes}
     meta.update({'n_ok': int((out['status'] == GRID_OK).sum()), 'n_failed': int((out['status'] == GRID_FAILED).sum()),
                  'n_missing': int((out['status'] == GRID_MISSING).sum()),
                  'cpu_hours': float(sum(m.get('cpu_hours', 0.0) for m in metas)),
@@ -1781,20 +1720,13 @@ if __name__ == '__main__':
     elif args.merge:
         merge_grids(args.merge, args.out, axis='s')
     else:
-        from rsg_phot.rsg import rsg_phot
         q, amin, amax = args.size
         builder = dusty_likelihood(dist=args.dist*u.Mpc, modeldir=args.modeldir or 'data/marcs/comarcs', logg=0.0,
                                    logz=-0.5 if args.logz is None else args.logz, mass=args.mass, c_o=args.c_o,
                                    density='powerlaw', comp={'sic': args.sic}, nk_comp={args.amc_nk: 1 - args.sic},
                                    size_dist='mrn', size_par={'q': q, 'amin': amin, 'amax': amax},
                                    outdir=args.outdir or 'data/dusty_grid', workdir=args.workdir)
-        # grid bands: every filter of the photometry table (pandeia names MIRI filters F0560W etc.)
-        tb = ascii.read(args.phot, format='csv', comment=r'\s*#', header_start=0, data_start=1)
-        rp = rsg_phot(verbose=False)
-        bandpasses = {}
-        for f, inst in zip(tb['filter'], tb['instrument']):
-            f, inst = str(f), str(inst).lower()
-            bandpasses[f] = rp.get_jwst_filters(f'{inst},{f if inst == "nircam" else f"F{int(f[1:-1]):04d}W"}')
+        bandpasses = table_bandpasses(args.phot)
         axes = {k: SHELL_GRID_AXES[k] if v is None else v
                 for k, v in zip(dusty_likelihood.GRID_AXES, [args.teff, args.tin, args.tau, args.s, args.Y])}
         Path(args.out).parent.mkdir(parents=True, exist_ok=True)
