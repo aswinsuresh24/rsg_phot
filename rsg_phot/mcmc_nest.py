@@ -180,9 +180,28 @@ class nest(object):
         if 'shell_thickness' in self.priors:
             self.priors['shell_thickness'] = 'log'
         if self.model_kind == 'dustygrid':
-            # the grid spans 0.01-60 in tau and 10-1e4 in Y, so sample both in log
-            self.priors['tau_V'] = 'log'
-            self.priors['Y'] = 'log'
+            # sample the axes the grid interpolates in log in log too (tau and Y; for the wind + shell grid
+            # also the wind tau fraction, shell radius, gap and shell thickness)
+            for k in self.model.LOG_AXES:
+                self.priors[self.GRID_NAMES.get(k, k)] = 'log'
+        # parameters held fixed (see fix); they are not sampled
+        self.fixed = {}
+
+    def fix(self, **values):
+        '''
+        Hold parameters at fixed values, e.g. n.fix(temperature=4000.) on a grid with Teff as an axis: they
+        leave model_fit_params (so the sampler does not see them) and are passed to the model as given.
+        Call before run_nested. Adds the fixed values to the tag, so the results file is distinct.
+        '''
+        for k, v in values.items():
+            if k not in self.model_fit_params:
+                raise ValueError(f'{k} is not a free parameter ({self.model_fit_params})')
+            lo, hi = self.bounds[k]
+            if not lo <= v <= hi:
+                raise ValueError(f'{k} = {v} is outside its bounds {self.bounds[k]}')
+            self.model_fit_params.remove(k)
+            self.fixed[k] = float(v)
+            self.tag += f'_{k}{v:g}'
 
     def prior_transform(self, u_):
         # map the unit cube onto the parameters
@@ -223,7 +242,8 @@ class nest(object):
 
     def model_mag(self, theta):
         # model AB magnitudes in phot['inst_filt'] at the fitted distance
-        p = dict(zip(self.model_fit_params, theta))
+        p = dict(self.fixed)
+        p.update(zip(self.model_fit_params, theta))
         rv, av = self.ext if self.ext is not None else (p['Rv'], p['Av'])
         if self.model_kind == 'grid':
             params = np.meshgrid(*[p[k] for k in ['temperature', 'dust_temp', 'tau_V', 'luminosity']], rv, av,
@@ -353,7 +373,8 @@ class nest(object):
                 pickle.dump({'results': self.results, 'params': self.model_fit_params, 'bounds': self.bounds,
                              'priors': self.priors, 'ext': self.ext, 'space': self.space,
                              'nsigma_lim': self.nsigma_lim, 'sys_frac': self.sys_frac,
-                             'reduced_chi2': self.reduced_chi2, 'tag': self.tag, 'phot': self.phot}, f)
+                             'reduced_chi2': self.reduced_chi2, 'tag': self.tag, 'phot': self.phot,
+                             'fixed': self.fixed}, f)
         if return_params:
             return self.read_params()
 

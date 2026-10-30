@@ -412,8 +412,10 @@ class dusty_gen(object):
             f.write('       - verbosity flag;                               verbose = 1\n')
             f.write('       - properties of emerging spectra;             fname.spp = 0\n')
             f.write('       - detailed spectra for each model;           fname.s### = 2\n')
+            # DUSTY only reads the visibility flag when images are on (i### != 0), so with images
+            # off there is no v### line: otherwise its value is read as the radial-profile flag and
+            # every later flag shifts by one (r### -> messages)
             f.write('       - images at specified wavelengths;           fname.i### = 0\n')
-            f.write('       - visibility function at spec. wavelengths;  fname.v### = 0\n')
             f.write('       - radial profiles for each model;            fname.r### = 0\n')
             f.write('       - detailed run-time messages;                fname.m### = 0\n')
             f.write('       -------------------------------------------------------------\n\n')
@@ -856,8 +858,10 @@ class dusty_likelihood(dusty_gen):
             f.write('       - verbosity flag;                               verbose = 0\n')
             f.write('       - properties of emerging spectra;             fname.spp = 0\n')
             f.write('       - detailed spectra for each model;           fname.s### = 2\n')
+            # DUSTY only reads the visibility flag when images are on (i### != 0), so with images
+            # off there is no v### line: otherwise its value is read as the radial-profile flag and
+            # every later flag shifts by one (r### -> messages)
             f.write('       - images at specified wavelengths;           fname.i### = 0\n')
-            f.write('       - visibility function at spec. wavelengths;  fname.v### = 0\n')
             f.write('       - radial profiles for each model;            fname.r### = 0\n')
             f.write('       - detailed run-time messages;                fname.m### = 2\n')
             f.write('       -------------------------------------------------------------\n\n')
