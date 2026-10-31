@@ -16,6 +16,7 @@ import subprocess
 import tempfile
 import argparse
 from pathlib import Path
+from rsg_phot.dust_mixes import MIXES, builder_kwargs
 
 def create_parser():
     '''
@@ -31,28 +32,32 @@ def create_parser():
                                      'Paths are relative to the repo root.')
     parser.add_argument('--gen', default=False, action='store_true', help='Run dusty_gen.gen_grid instead of the shell grid')
     parser.add_argument('--logz', type=float, default=None, help='log metallicity (0.0, -0.25 and -0.5 for MARCS; 0.0 and -0.5 for NewEra; '
-                        'COMARCS -0.5). Default -0.5 for the shell grid, 0.0 for --gen')
+                        'COMARCS -0.5). Default the --mix value (-0.5) for the shell grid, 0.0 for --gen')
     parser.add_argument('--comp', type=str, default='sil', help='Dust composition for --gen (sil or grf)')
     parser.add_argument('--outdir', type=str, default=None, help='Output directory for spectra (default data/dusty_grid for the '
                         'shell grid, data/dusty_sil_grid for --gen)')
     parser.add_argument('--modeldir', type=str, default=None, help='Model directory for DUSTY input spectra (default '
-                        'data/marcs/comarcs for the shell grid, data/marcs/m1.00_g0.00 for --gen)')
+                        "the --mix photosphere for the shell grid, data/marcs/m1.00_g0.00 for --gen)")
     parser.add_argument('--rewrite_lambda_grid', default=False, action=argparse.BooleanOptionalAction, help='Rewrite the wavelength grid in DUSTY and recompile')
 
-    g = parser.add_argument_group('shell grid', 'rho ~ r^-s from R_in to Y R_in; defaults are the coarse axes in SHELL_GRID_AXES')
-    g.add_argument('--out', type=str, default='data/dusty_grid/shell_grid_amC_SiC20_ism.npz',
-                   help='Grid file; cells are sharded in <out>.shards/, so rerunning resumes an interrupted build')
+    g = parser.add_argument_group('shell grid', 'rho ~ r^-s from R_in to Y R_in; defaults are the coarse axes in SHELL_GRID_AXES, '
+                                  'with Teff from the --mix preset')
+    g.add_argument('--mix', type=str, default='carbon', choices=list(MIXES),
+                   help='Photosphere + dust preset from dust_mixes.py (carbon: COMARCS + amC/SiC; silicate: MARCS + Sil-Ow/corundum)')
+    g.add_argument('--out', type=str, default=None,
+                   help='Grid file (default data/dusty_grid/shell_grid_<mix tag>_ism.npz); cells are sharded in <out>.shards/, '
+                        'so rerunning resumes an interrupted build')
     g.add_argument('--phot', type=str, default='data/dolphot/sn2026sqf/sn2026sqf_photometry_new_ujy.txt',
                    help='Photometry table whose filter and instrument columns set the grid bands')
     g.add_argument('--dist', type=float, default=19.0, help='Distance (Mpc)')
-    g.add_argument('--c_o', type=float, default=1.4, help='COMARCS C/O')
-    g.add_argument('--mass', type=float, default=2.0, help='COMARCS mass (Msun)')
-    g.add_argument('--sic', type=float, default=0.2, help='SiC-Pg abundance; amC (--amc_nk) takes the rest')
-    g.add_argument('--amc_nk', type=str, default='amC-zb2.nk', help='amC optical constants (.nk in $DUSTY_PATH/Lib_nk)')
-    g.add_argument('--size', type=float, nargs=3, default=[3.5, 0.005, 0.25], metavar=('Q', 'AMIN', 'AMAX'),
-                   help='MRN size distribution: power q and amin, amax (um)')
+    g.add_argument('--c_o', type=float, default=None, help='COMARCS C/O (default the --mix value)')
+    g.add_argument('--mass', type=float, default=None, help='COMARCS mass (Msun; default the --mix value)')
+    g.add_argument('--size', type=float, nargs=3, default=None, metavar=('Q', 'AMIN', 'A'),
+                   help='Size distribution of the --mix type (KMH for both presets): power q, amin and amax (MRN) or the '
+                        'exponential scale a0 (KMH), in um; default the --mix value')
     for k, name in [('temp', 'teff'), ('dust_temp', 'tin'), ('tau', 'tau'), ('s', 's'), ('Y', 'Y')]:
-        g.add_argument(f'--{name}', type=float, nargs='+', default=None, help=f'{k} axis (default {SHELL_GRID_AXES[k].tolist()})')
+        dflt = 'the --mix Teff nodes' if k == 'temp' else SHELL_GRID_AXES[k].tolist()
+        g.add_argument(f'--{name}', type=float, nargs='+', default=None, help=f'{k} axis (default {dflt})')
     g.add_argument('--nproc', type=int, default=10, help='Parallel DUSTY processes')
     g.add_argument('--retry_failed', default=False, action='store_true', help='Rerun cells whose DUSTY run failed as a whole')
     g.add_argument('--merge', type=str, nargs='+', default=None, metavar='NPZ',
@@ -64,16 +69,11 @@ def create_parser():
                    help='DUSTY working directories (keep the path short: DUSTY has fixed-length file names)')
     return parser
 
-# Coarse single-shell grid (amC + SiC, MRN q 3.5, 0.005-0.25 um, COMARCS) for showing that one spherical shell cannot fit
-# SN 2026sqf. PCHIP accuracy from hold-out cuts at Teff 4000 (2026sqf_tmp/shell_grid_holdout.py): temp 200 K steps <= 0.04
-# mag (default_grid_axes); dust_temp x1.19 steps <= 0.017 mag, so x1.29 here is expected at ~0.05 mag (<= 0.3 sigma);
-# tau 0.15 dex <= 0.011 mag; s at 1.0 steps <= 0.07 mag NIRCam, 0.15 mag mid-IR, so ~4x less at 0.5; Y with 1.5, 3, 10,
-# 100, 1e4 reached 0.2 mag mid-IR (0.32 at F2550W) in the 10-100 and 100-1e4 gaps, filled here by 30 and 1000. Check the
-# grid with validate_grid on posterior draws
+# single-shell grid axes (default for --mix carbon or silicate)
 SHELL_GRID_AXES = {'temp': np.arange(2600., 4400. + 1e-6, 200.),
                    'dust_temp': np.round(np.geomspace(150., 1500., 10)),
                    'tau': np.round(np.logspace(-1, 2, 21), 5),
-                   's': np.array([1., 1.5, 2., 2.5]),
+                   's': np.array([0.25, 0.5, 0.75, 1., 1.5, 2., 2.5]),
                    'Y': np.array([1.5, 3., 10., 30., 100., 1000., 1e4])}
 class dusty_gen(object):
     def __init__(self, 
@@ -126,7 +126,7 @@ class dusty_gen(object):
             self.rsg_wavelength = np.logspace(np.log10(1300.), np.log10(200000.), num=5036) * u.Angstrom
             # blackbody tail beyond the model coverage, scaled over rsg_match (micron)
             self.rsg_join, self.rsg_match = 20.0, (10.0, 20.0)
-            self.rsg_tag = self.modeltype.lower()
+            self.rsg_tag = f'{self.modeltype.lower()}_g{logg:+.2f}_z{logz:+.2f}'
         self.rsg_minflux = np.min(self.rsg_data)
         self.rsg_interp = self.setup_temp_interp(interp_method)
 
@@ -707,7 +707,8 @@ class dusty_likelihood(dusty_gen):
         # so resolve to an absolute path: as given, then $DUSTY_PATH/Lib_nk, then $DUSTY_PATH
         for path in [Path(nkfile),
                      Path(self.dusty_basedir) / 'Lib_nk' / nkfile,
-                     Path(self.dusty_basedir) / nkfile]:
+                     Path(self.dusty_basedir) / nkfile,
+                     Path(__file__).resolve().parents[1] / 'data' / 'optool_lnk' / nkfile]:
             if path.is_file():
                 path = str(path.resolve())
                 # FileMSG in dustyV2.f reads file names into a CHARACTER*230
@@ -715,8 +716,8 @@ class dusty_likelihood(dusty_gen):
                     raise ValueError(f'Path to {nkfile} is too long for DUSTY (>= 230 characters)')
                 return path
 
-        raise FileNotFoundError(f'{nkfile} not found as given, in {self.dusty_basedir}/Lib_nk '
-                                f'or in {self.dusty_basedir}')
+        raise FileNotFoundError(f'{nkfile} not found as given, in {self.dusty_basedir}/Lib_nk, '
+                                f'in {self.dusty_basedir} or in data/optool_lnk')
 
     def get_params(self, theta):
         # map the free parameter vector onto the full parameter dictionary
@@ -1710,6 +1711,7 @@ if __name__ == '__main__':
     parser = create_parser()
     args = parser.parse_args()
     rewrite_lambda_grid = args.rewrite_lambda_grid
+    args.out = args.out or f'data/dusty_grid/shell_grid_{MIXES[args.mix]["tag"]}_ism.npz'
 
     if args.gen:
         logz = 0.0 if args.logz is None else args.logz
@@ -1724,16 +1726,17 @@ if __name__ == '__main__':
     elif args.merge:
         merge_grids(args.merge, args.out, axis='s')
     else:
-        q, amin, amax = args.size
-        builder = dusty_likelihood(dist=args.dist*u.Mpc, modeldir=args.modeldir or 'data/marcs/comarcs', logg=0.0,
-                                   logz=-0.5 if args.logz is None else args.logz, mass=args.mass, c_o=args.c_o,
-                                   density='powerlaw', comp={'sic': args.sic}, nk_comp={args.amc_nk: 1 - args.sic},
-                                   size_dist='mrn', size_par={'q': q, 'amin': amin, 'amax': amax},
-                                   outdir=args.outdir or 'data/dusty_grid', workdir=args.workdir)
+        a3 = 'a0' if MIXES[args.mix]['size_dist'] == 'kmh' else 'amax'
+        size = None if args.size is None else dict(zip(('q', 'amin', a3), args.size))
+        builder = dusty_likelihood(dist=args.dist*u.Mpc, density='powerlaw', outdir=args.outdir or 'data/dusty_grid',
+                                   workdir=args.workdir, **builder_kwargs(args.mix, modeldir=args.modeldir, logz=args.logz,
+                                                                          mass=args.mass, c_o=args.c_o, size_par=size))
         bandpasses = table_bandpasses(args.phot)
-        axes = {k: SHELL_GRID_AXES[k] if v is None else v
+        default_axes = dict(SHELL_GRID_AXES, temp=MIXES[args.mix]['temps'])
+        axes = {k: default_axes[k] if v is None else v
                 for k, v in zip(dusty_likelihood.GRID_AXES, [args.teff, args.tin, args.tau, args.s, args.Y])}
         Path(args.out).parent.mkdir(parents=True, exist_ok=True)
+        print(f'mix {args.mix}: {builder.grid_meta()}', flush=True)
         print(' | '.join(f'{k}: {list(np.round(v, 5))}' for k, v in axes.items()), flush=True)
         builder.build_grid(args.out, bandpasses, temps=axes['temp'], dust_temps=axes['dust_temp'], taus=axes['tau'],
                            ss=axes['s'], Ys=axes['Y'], nproc=args.nproc, retry_failed=args.retry_failed,

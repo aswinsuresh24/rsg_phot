@@ -442,9 +442,12 @@ def chi2_radmc(phot, model, floor=0.05, nsigma_lim=3.0):
 if __name__ == '__main__':
     # nested sampling of an SN 2026sqf SED with a DUSTY grid from dust.py (e.g. the single-shell
     # grid), interpolated on the fly by DustyGrid (tensor-product PCHIP). Run from the repo root:
-    #   python -m rsg_phot.mcmc_nest --npool 8
+    #   python -m rsg_phot.mcmc_nest --npool 8 [--mix silicate]
+    from rsg_phot.dust_mixes import MIXES, grid_file
     ap = argparse.ArgumentParser(description='Nested sampling of SN 2026sqf with a DUSTY grid')
-    ap.add_argument('--grid', default='data/dusty_grids/2026sqf/shell_amC_SiC20.npz', help='DustyGrid .npz')
+    ap.add_argument('--mix', default='carbon', choices=list(MIXES),
+                    help='dust_mixes.py preset whose single-shell grid is fitted (data/dusty_grids/2026sqf/shell_<mix tag>.npz)')
+    ap.add_argument('--grid', default=None, help='DustyGrid .npz (overrides --mix)')
     ap.add_argument('--phot', default='data/dolphot/sn2026sqf/sn2026sqf_photometry_new_ujy.txt', help='photometry table')
     ap.add_argument('--exclude', nargs='*', default=['F187N', 'F405N'], help='bands left out of the fit')
     ap.add_argument('--dist', type=float, nargs=2, default=[19.0, 1.5], metavar=('D', 'ERR'), help='distance and error (Mpc)')
@@ -457,6 +460,7 @@ if __name__ == '__main__':
     ap.add_argument('--seed', type=int, default=1)
     ap.add_argument('--backends', default='data/backends', help='directory for the results pickle')
     args = ap.parse_args()
+    args.grid = args.grid or grid_file(args.mix)
 
     d, de = args.dist
     dm, dmerr = 5*np.log10(d*1e6) - 5, 5/np.log(10) * de/d

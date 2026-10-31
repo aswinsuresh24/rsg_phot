@@ -25,6 +25,7 @@ import astropy.units as u
 from astropy.table import QTable
 from rsg_phot.dust import (dusty_likelihood, DustyGrid, local_pchip, merge_grids, table_bandpasses, bandpass_tables,
                            bandpasses_from_tables, report_progress, _validate_worker, GRID_OK, GRID_FAILED, GRID_MISSING)
+from rsg_phot.dust_mixes import MIXES, builder_kwargs
 
 # DUSTY aborts when eta_min/eta_max < 1e-12 anywhere in the shell; keep a margin
 ETA_FLOOR = 1e-11
@@ -351,21 +352,24 @@ def validate_grid(builder, grid, bandpasses, points, nproc=1):
 def create_parser():
     parser = argparse.ArgumentParser(description='Build the wind + detached shell DUSTY grid (twoshell_likelihood.build_grid) '
                                      'for SN 2026sqf. Paths are relative to the repo root.')
-    parser.add_argument('--out', type=str, default='data/dusty_grid/twoshell_grid_amC_SiC20_ism.npz',
-                        help='Grid file; cells are sharded in <out>.shards/, so rerunning resumes an interrupted build')
+    parser.add_argument('--mix', type=str, default='carbon', choices=list(MIXES),
+                        help='Photosphere + dust preset from dust_mixes.py (carbon: COMARCS + amC/SiC; silicate: MARCS + Sil-Ow/corundum)')
+    parser.add_argument('--out', type=str, default=None,
+                        help='Grid file (default data/dusty_grid/twoshell_grid_<mix tag>_ism.npz); cells are sharded in '
+                             '<out>.shards/, so rerunning resumes an interrupted build')
     parser.add_argument('--phot', type=str, default='data/dolphot/sn2026sqf/sn2026sqf_photometry_new_ujy.txt',
                         help='Photometry table whose filter and instrument columns set the grid bands')
     parser.add_argument('--dist', type=float, default=19.0, help='Distance (Mpc)')
-    parser.add_argument('--teff', type=float, default=4000., help='Photospheric Teff (K), fixed for the grid')
-    parser.add_argument('--logz', type=float, default=-0.5, help='COMARCS log metallicity')
-    parser.add_argument('--c_o', type=float, default=1.4, help='COMARCS C/O')
-    parser.add_argument('--mass', type=float, default=2.0, help='COMARCS mass (Msun)')
-    parser.add_argument('--modeldir', type=str, default='data/marcs/comarcs', help='Model directory for DUSTY input spectra')
+    parser.add_argument('--teff', type=float, default=None, help='Photospheric Teff (K), fixed for the grid (default the --mix value: '
+                        'carbon 4000, silicate 4500)')
+    parser.add_argument('--logz', type=float, default=None, help='Photosphere log metallicity (default the --mix value)')
+    parser.add_argument('--c_o', type=float, default=None, help='COMARCS C/O (default the --mix value)')
+    parser.add_argument('--mass', type=float, default=None, help='COMARCS mass (Msun; default the --mix value)')
+    parser.add_argument('--modeldir', type=str, default=None, help='Model directory for DUSTY input spectra (default the --mix photosphere)')
     parser.add_argument('--outdir', type=str, default='data/dusty_grid', help='Output directory for input spectra')
-    parser.add_argument('--sic', type=float, default=0.2, help='SiC-Pg abundance; amC (--amc_nk) takes the rest')
-    parser.add_argument('--amc_nk', type=str, default='amC-zb2.nk', help='amC optical constants (.nk in $DUSTY_PATH/Lib_nk)')
-    parser.add_argument('--size', type=float, nargs=3, default=[3.5, 0.005, 0.25], metavar=('Q', 'AMIN', 'AMAX'),
-                        help='MRN size distribution: power q and amin, amax (um)')
+    parser.add_argument('--size', type=float, nargs=3, default=None, metavar=('Q', 'AMIN', 'A'),
+                        help='Size distribution of the --mix type (KMH for both presets): power q, amin and amax (MRN) or the '
+                             'exponential scale a0 (KMH), in um; default the --mix value')
     parser.add_argument('--powers', type=float, nargs=2, default=[2., 2.], metavar=('S_WIND', 'S_SHELL'),
                         help='Density powers of the wind and the shell (rho ~ r^-s)')
     for k, name in [('dust_temp', 'tin'), ('tau', 'tau'), ('f_wind', 'f_wind'), ('y_shell', 'y_shell'), ('gap', 'gap'),
@@ -384,17 +388,20 @@ def create_parser():
 
 if __name__ == '__main__':
     args = create_parser().parse_args()
+    args.out = args.out or f'data/dusty_grid/twoshell_grid_{MIXES[args.mix]["tag"]}_ism.npz'
+    args.teff = MIXES[args.mix]['teff'] if args.teff is None else args.teff
     if args.merge:
         merge_grids(args.merge, args.out, axis=args.merge_axis, grid_axes=TwoShellGrid.AXES)
     else:
-        q, amin, amax = args.size
-        builder = twoshell_likelihood(dist=args.dist*u.Mpc, modeldir=args.modeldir, logg=0.0, logz=args.logz, mass=args.mass,
-                                      c_o=args.c_o, comp={'sic': args.sic}, nk_comp={args.amc_nk: 1 - args.sic}, size_dist='mrn',
-                                      size_par={'q': q, 'amin': amin, 'amax': amax}, powers=args.powers, outdir=args.outdir,
-                                      workdir=args.workdir)
+        a3 = 'a0' if MIXES[args.mix]['size_dist'] == 'kmh' else 'amax'
+        size = None if args.size is None else dict(zip(('q', 'amin', a3), args.size))
+        builder = twoshell_likelihood(dist=args.dist*u.Mpc, powers=args.powers, outdir=args.outdir, workdir=args.workdir,
+                                      **builder_kwargs(args.mix, modeldir=args.modeldir, logz=args.logz, mass=args.mass,
+                                                       c_o=args.c_o, size_par=size))
         axes = {k: TWOSHELL_GRID_AXES[k] if v is None else np.asarray(v)
                 for k, v in zip(twoshell_likelihood.GRID_AXES, [args.tin, args.tau, args.f_wind, args.y_shell, args.gap, args.Y_shell])}
         Path(args.out).parent.mkdir(parents=True, exist_ok=True)
+        print(f'mix {args.mix}: {builder.grid_meta()}', flush=True)
         print(f'Teff {args.teff:g} | ' + ' | '.join(f'{k}: {np.round(v, 5).tolist()}' for k, v in axes.items()), flush=True)
         builder.build_grid(args.out, table_bandpasses(args.phot), temp=args.teff, axes=axes, nproc=args.nproc,
                            retry_failed=args.retry_failed, save_sed=args.save_sed)
