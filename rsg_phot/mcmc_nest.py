@@ -184,8 +184,14 @@ class nest(object):
             # also the wind tau fraction, shell radius, gap and shell thickness)
             for k in self.model.LOG_AXES:
                 self.priors[self.GRID_NAMES.get(k, k)] = 'log'
-        # parameters held fixed (see fix); they are not sampled
+        # parameters held fixed (see fix); they are not sampled. Grid axes with a single node (e.g. the
+        # wind + shell grid's T_in) are fixed there
         self.fixed = {}
+        if self.model_kind == 'dustygrid':
+            for k, par in zip(self.model.AXES, self.grid_params):
+                if len(self.model.axes[k]) == 1:
+                    self.model_fit_params.remove(par)
+                    self.fixed[par] = float(self.model.axes[k][0])
 
     def fix(self, **values):
         '''

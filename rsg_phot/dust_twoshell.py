@@ -16,7 +16,7 @@ Geometry, in y = r / R_in (R_in where the dust is at T_in): a wind rho ~ y^-s_w 
 radial tau_V, so each DUSTY tau sequence scales both components together. Teff is fixed per grid.
 
 Run from the repo root, like rsg_phot.dust (cells are sharded in <out>.shards/, so rerunning resumes):
-    python -m rsg_phot.dust_twoshell --out data/dusty_grids/2026sqf/twoshell_amC_SiC20.npz --nproc 20 --save_sed
+    python -m rsg_phot.dust_twoshell --out data/dusty_grids/2026sqf/twoshell_SilOw_cor15.npz --nproc 20 --save_sed
 '''
 import os, json, time, argparse
 from pathlib import Path
@@ -30,17 +30,30 @@ from rsg_phot.dust_mixes import MIXES, builder_kwargs
 # DUSTY aborts when eta_min/eta_max < 1e-12 anywhere in the shell; keep a margin
 ETA_FLOOR = 1e-11
 
-# Default grid (Teff 4000 K, amC + 20% SiC, MRN q 3.5, 0.005-0.25 um). Around the RADMC best fit (T_in 700 K,
-# tau 8, f_wind 0.19, shell at 13-52 R_in, no gap; chi2 rises to 41 at T_in 1000 K, to 24-36 at f_wind 0.13 / 0.24,
-# and the gap and Y_shell are weakly constrained). dust_temp in x1.19 steps (<= 0.017 mag in the single-shell
-# hold-out), tau in 0.1 dex steps (0.15 dex gave <= 0.011 mag); the geometry axes are coarse: check them with a
-# hold-out (validate_grid) before trusting the posterior
-TWOSHELL_GRID_AXES = {'dust_temp': np.round(np.geomspace(500., 1000., 5)),
-                      'tau': np.round(np.logspace(np.log10(2.5), np.log10(25.), 11), 4),
-                      'f_wind': np.round(np.geomspace(0.06, 0.4, 6), 3),
-                      'y_shell': np.round(np.geomspace(5., 32., 5), 2),
-                      'gap': np.array([1., 1.6, 2.5]),
-                      'Y_shell': np.array([2., 4., 8.])}
+# Default grid: dust_mixes 'silicate' (MARCS + 85% Sil-Ow / 15% corundum, KMH a0 0.1 um) at the silicate single-shell
+# nest ML Teff (4561 K) and T_in (790 K), both fixed. Scoped with DUSTY scans on the fair photometry
+# (2026sqf_tmp/silicate_twoshell_check.py, silicate_twoshell_gap.py, silicate_windedge_gap.py; tau and L refit): best
+# chi2 5.5 at f_wind 0.45, shell inner edge y_shell ~5 (good fits along y_shell ~4.5-8, the wind edge y_shell/gap
+# trading against f_wind), tau 14-21; f_wind 0.3-0.6 within dchi2 3, 0.16 -> 35; gap 1-2.5 allowed with a short wind,
+# 4 always worse (>= 10.9); Y_shell 4-10 flat (2 -> 10) but it sets the dust mass (M per unit tau of an r^-2 segment
+# ∝ its inner x outer radius), so it stays free; T_in 740-830 K within dchi2 1.5.
+# Node spacing (2026sqf_tmp/twoshell_node_check.py, 1D hold-outs through f_wind 0.44, y_shell 4.8, gap 1.3, Y_shell 6.3):
+# Y_shell is smooth, 4 nodes over 2.5-16 interpolate to <= 0.006 mag (3 nodes <= 0.013, one point 0.024 for every set);
+# along tau (0.1 dex), f_wind, y_shell and gap the hold-out errors (0.03-0.1 mag, mostly F150W-F200W and F1000W-F1130W)
+# do not fall with more nodes: they are DUSTY noise. Accuracy 0.01 (TWOSHELL_ACCURACY, +20% runtime; no failures)
+# halves it along the geometry axes (twoshell_accuracy_check.py: y_shell noise max 0.21 -> 0.11 mag in the near-IR,
+# 0.055 -> 0.028 at 10-25 um; medians 0.005-0.02). gap 1.15 resolves the kink where the wind and shell edges meet.
+# Check the grid with a hold-out (validate_grid) before trusting the posterior. Cells whose wind would end inside
+# TWOSHELL_MIN_WIND R_in (y_shell / gap) are not run and stay missing (NaN), which bounds the posterior there.
+TWOSHELL_TEFF = 4561.
+TWOSHELL_MIN_WIND = 1.2
+TWOSHELL_ACCURACY = 0.01
+TWOSHELL_GRID_AXES = {'dust_temp': np.array([790.]),
+                      'tau': np.round(np.logspace(np.log10(8.), np.log10(32.), 7), 3),
+                      'f_wind': np.round(np.geomspace(0.15, 0.75, 7), 3),
+                      'y_shell': np.round(np.geomspace(3., 16., 8), 2),
+                      'gap': np.round(np.r_[1., 1.15, np.geomspace(1.32, 4., 5)], 2),
+                      'Y_shell': np.round(np.geomspace(2.5, 16., 4), 2)}
 
 def windshell_density_profile(f_w, y_s, g, Y_s, s_w=2., s_s=2., edge=0.01, gap_rel=1e-2, npts=500, nedge=60):
     '''
@@ -83,8 +96,8 @@ class twoshell_likelihood(dusty_likelihood):
     GEOMETRY = ['f_wind', 'y_shell', 'gap', 'Y_shell']
     GRID_AXES = tuple(TWOSHELL_GRID_AXES)
 
-    def __init__(self, powers=(2., 2.), edge=0.01, gap_rel=1e-2, fixed=None, **kwargs):
-        super().__init__(density='powerlaw', shell_thickness=None, **kwargs)
+    def __init__(self, powers=(2., 2.), edge=0.01, gap_rel=1e-2, fixed=None, accuracy=TWOSHELL_ACCURACY, **kwargs):
+        super().__init__(density='powerlaw', shell_thickness=None, accuracy=accuracy, **kwargs)
         self.density = 'windshell'
         self.powers = tuple(float(s) for s in powers)
         self.edge, self.gap_rel = edge, gap_rel
@@ -133,21 +146,22 @@ class twoshell_likelihood(dusty_likelihood):
              'gap': gap, 'Y_shell': Y_shell}
         return self.sequence_cell(p, taus, bandpasses, save_sed)
 
-    def build_grid(self, outfile, bandpasses, temp=4000., axes=None, nproc=1, save_sed=False, assemble=True,
-                   retry_failed=False):
+    def build_grid(self, outfile, bandpasses, temp=TWOSHELL_TEFF, axes=None, nproc=1, save_sed=False, assemble=True,
+                   retry_failed=False, min_wind=TWOSHELL_MIN_WIND):
         '''
         Build a rectangular grid over GRID_AXES at Teff = temp, as dusty_likelihood.build_grid: every cell of the
         non-tau axes is one DUSTY run over all taus at L = 1e4 Lsun, written to its own shard in <outfile>.shards/
         (so an interrupted run resumes) and merged into outfile by assemble_grid. Axes missing from `axes` take
-        the TWOSHELL_GRID_AXES values.
+        the TWOSHELL_GRID_AXES values. Cells with y_shell / gap < min_wind (the wind's outer edge, in R_in) are
+        skipped and stay GRID_MISSING.
         '''
         axes = {k: np.unique(np.asarray((axes or {}).get(k, TWOSHELL_GRID_AXES[k]), dtype=float)) for k in self.GRID_AXES}
         if len(axes['tau']) < 2:
             raise ValueError('A DUSTY tau sequence needs at least two optical depths')
         if (axes['f_wind'] <= 0).any() or (axes['f_wind'] >= 1).any() or (axes['gap'] < 1).any() or (axes['Y_shell'] <= 1).any():
             raise ValueError('need 0 < f_wind < 1, gap >= 1 and Y_shell > 1')
-        if axes['y_shell'].min() <= axes['gap'].max():
-            raise ValueError('every y_shell must exceed every gap (the wind must reach beyond R_in)')
+        if min_wind <= 1:
+            raise ValueError('min_wind must exceed 1 (the wind must reach beyond R_in)')
         lo, hi = self.rsg_temp.value.min(), self.rsg_temp.value.max()
         if not lo <= temp <= hi:
             raise ValueError(f'temp must lie within the {self.modeltype} grid ({lo}-{hi} K)')
@@ -156,7 +170,7 @@ class twoshell_likelihood(dusty_likelihood):
         shard_dir.mkdir(parents=True, exist_ok=True)
         config = {'axes': {k: v.tolist() for k, v in axes.items()}, 'temp': float(temp),
                   'bands': list(bandpasses), 'save_sed': save_sed, 'dist_mpc': self.dist.to(u.Mpc).value,
-                  'logl': self.GRID_LOGL, 'meta': self.grid_meta(),
+                  'logl': self.GRID_LOGL, 'min_wind': float(min_wind), 'meta': self.grid_meta(),
                   'dusty_path': self.dusty_basedir, 'npL': len(self.read_lambda_grid())}
         config = json.loads(json.dumps(config, default=float))
         config_file = shard_dir / 'config.json'
@@ -166,12 +180,14 @@ class twoshell_likelihood(dusty_likelihood):
         else:
             config_file.write_text(json.dumps(config, indent=1))
 
-        cells = [tuple(c) for c in np.ndindex(*[len(axes[k]) for k in CELL_AXES])]
+        iys, ig = CELL_AXES.index('y_shell'), CELL_AXES.index('gap')
+        cells = [tuple(c) for c in np.ndindex(*[len(axes[k]) for k in CELL_AXES])
+                 if axes['y_shell'][c[iys]]/axes['gap'][c[ig]] >= min_wind]
         def done(c):
             fl_ = shard_dir / shard_name(c)
             return fl_.exists() and not (retry_failed and str(np.load(fl_)['msg']))
         todo = [c for c in cells if not done(c)]
-        print(f'{len(cells)} cells ({len(cells)*len(axes["tau"])} models); {len(todo)} still to run')
+        print(f'{len(cells)} cells ({len(cells)*len(axes["tau"])} models; wind edges >= {min_wind:g} R_in); {len(todo)} still to run')
 
         # bandpasses go to the workers as plain arrays (see dusty_likelihood.build_grid)
         args = (self, bandpass_tables(bandpasses), axes, float(temp), save_sed, str(shard_dir))
@@ -352,7 +368,7 @@ def validate_grid(builder, grid, bandpasses, points, nproc=1):
 def create_parser():
     parser = argparse.ArgumentParser(description='Build the wind + detached shell DUSTY grid (twoshell_likelihood.build_grid) '
                                      'for SN 2026sqf. Paths are relative to the repo root.')
-    parser.add_argument('--mix', type=str, default='carbon', choices=list(MIXES),
+    parser.add_argument('--mix', type=str, default='silicate', choices=list(MIXES),
                         help='Photosphere + dust preset from dust_mixes.py (carbon: COMARCS + amC/SiC; silicate: MARCS + Sil-Ow/corundum)')
     parser.add_argument('--out', type=str, default=None,
                         help='Grid file (default data/dusty_grid/twoshell_grid_<mix tag>_ism.npz); cells are sharded in '
@@ -360,8 +376,8 @@ def create_parser():
     parser.add_argument('--phot', type=str, default='data/dolphot/sn2026sqf/sn2026sqf_photometry_new_ujy.txt',
                         help='Photometry table whose filter and instrument columns set the grid bands')
     parser.add_argument('--dist', type=float, default=19.0, help='Distance (Mpc)')
-    parser.add_argument('--teff', type=float, default=None, help='Photospheric Teff (K), fixed for the grid (default the --mix value: '
-                        'carbon 4000, silicate 4500)')
+    parser.add_argument('--teff', type=float, default=None, help=f'Photospheric Teff (K), fixed for the grid (default {TWOSHELL_TEFF:g} '
+                        'for silicate, the silicate single-shell ML; otherwise the --mix value)')
     parser.add_argument('--logz', type=float, default=None, help='Photosphere log metallicity (default the --mix value)')
     parser.add_argument('--c_o', type=float, default=None, help='COMARCS C/O (default the --mix value)')
     parser.add_argument('--mass', type=float, default=None, help='COMARCS mass (Msun; default the --mix value)')
@@ -375,6 +391,10 @@ def create_parser():
     for k, name in [('dust_temp', 'tin'), ('tau', 'tau'), ('f_wind', 'f_wind'), ('y_shell', 'y_shell'), ('gap', 'gap'),
                     ('Y_shell', 'Y_shell')]:
         parser.add_argument(f'--{name}', type=float, nargs='+', default=None, help=f'{k} axis (default {TWOSHELL_GRID_AXES[k].tolist()})')
+    parser.add_argument('--accuracy', type=float, default=TWOSHELL_ACCURACY,
+                        help='DUSTY flux-conservation accuracy (0.05 doubles the numerical noise along the geometry axes)')
+    parser.add_argument('--min_wind', type=float, default=TWOSHELL_MIN_WIND,
+                        help='Skip cells whose wind ends inside this radius (y_shell / gap, in R_in)')
     parser.add_argument('--nproc', type=int, default=10, help='Parallel DUSTY processes')
     parser.add_argument('--retry_failed', default=False, action='store_true', help='Rerun cells whose DUSTY run failed as a whole')
     parser.add_argument('--merge', type=str, nargs='+', default=None, metavar='NPZ',
@@ -389,13 +409,13 @@ def create_parser():
 if __name__ == '__main__':
     args = create_parser().parse_args()
     args.out = args.out or f'data/dusty_grid/twoshell_grid_{MIXES[args.mix]["tag"]}_ism.npz'
-    args.teff = MIXES[args.mix]['teff'] if args.teff is None else args.teff
+    args.teff = (TWOSHELL_TEFF if args.mix == 'silicate' else MIXES[args.mix]['teff']) if args.teff is None else args.teff
     if args.merge:
         merge_grids(args.merge, args.out, axis=args.merge_axis, grid_axes=TwoShellGrid.AXES)
     else:
         a3 = 'a0' if MIXES[args.mix]['size_dist'] == 'kmh' else 'amax'
         size = None if args.size is None else dict(zip(('q', 'amin', a3), args.size))
-        builder = twoshell_likelihood(dist=args.dist*u.Mpc, powers=args.powers, outdir=args.outdir, workdir=args.workdir,
+        builder = twoshell_likelihood(dist=args.dist*u.Mpc, powers=args.powers, outdir=args.outdir, workdir=args.workdir, accuracy=args.accuracy,
                                       **builder_kwargs(args.mix, modeldir=args.modeldir, logz=args.logz, mass=args.mass,
                                                        c_o=args.c_o, size_par=size))
         axes = {k: TWOSHELL_GRID_AXES[k] if v is None else np.asarray(v)
@@ -404,4 +424,4 @@ if __name__ == '__main__':
         print(f'mix {args.mix}: {builder.grid_meta()}', flush=True)
         print(f'Teff {args.teff:g} | ' + ' | '.join(f'{k}: {np.round(v, 5).tolist()}' for k, v in axes.items()), flush=True)
         builder.build_grid(args.out, table_bandpasses(args.phot), temp=args.teff, axes=axes, nproc=args.nproc,
-                           retry_failed=args.retry_failed, save_sed=args.save_sed)
+                           retry_failed=args.retry_failed, save_sed=args.save_sed, min_wind=args.min_wind)
