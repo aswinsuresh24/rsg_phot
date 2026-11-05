@@ -69,7 +69,7 @@ Outputs, under data/dolphot/sn2026sqf/starbug/:
   sn2026sqf_miri_starbug_photometry.txt     combined per-band photometry (uJy and AB mag)
   plots: *_residuals.png, *_identity.png, *_psfmodes.png, *_injection.png, *_cog.png, *_sed.png
 
-Run from the repo root:  python starbug_miri_2026sqf.py [--plots-only]
+Run from the repo root:  python sn2026sqf/starbug_miri_2026sqf.py [--plots-only]
 (synphot conda env: starbug2 0.7.7, stpsf 2.2.0; stpsf data >= 2.1 under STPSF_DATA)
 '''
 import os, sys, glob, shutil, warnings, zlib
@@ -77,7 +77,7 @@ from multiprocessing import Pool
 
 import numpy as np
 
-ROOT = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))     # repo root (scripts live in sn2026sqf/)
 JHAT_DIR = f'{ROOT}/data/dolphot/sn2026sqf/jhat'
 TARGET_FILE = f'{ROOT}/data/dolphot/sn2026sqf/sn2026sqf_pipeline5as_photometry.txt'
 TARGET_UJY_FILE = f'{ROOT}/data/dolphot/sn2026sqf/sn2026sqf_pipeline5as_photometry_ujy.txt'

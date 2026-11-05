@@ -24,7 +24,7 @@ Outputs, under data/dolphot/sn2026sqf/starbug/:
   sn2026sqf_miri_dolphot_compare_summary.csv  per band: median ratio, scatter, trend with x
   sn2026sqf_miri_dolphot_compare.png
 
-Run from the repo root after starbug_miri_2026sqf.py:  python starbug_dolphot_compare_2026sqf.py [--plots-only]
+Run from the repo root after starbug_miri_2026sqf.py:  python sn2026sqf/starbug_dolphot_compare_2026sqf.py [--plots-only]
 '''
 import os, sys, glob, shutil
 from multiprocessing import Pool

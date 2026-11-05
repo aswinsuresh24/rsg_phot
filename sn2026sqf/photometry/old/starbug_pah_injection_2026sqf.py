@@ -29,7 +29,7 @@ Outputs, under data/dolphot/sn2026sqf/starbug/pah_injection/:
   pah_injection_maps.png, pah_injection_residuals.png, pah_injection_sites.png
 
 Run from the repo root after starbug_miri_2026sqf.py and starbug_dolphot_compare_2026sqf.py:
-  python starbug_pah_injection_2026sqf.py [--plots-only]
+  python sn2026sqf/starbug_pah_injection_2026sqf.py [--plots-only]
 '''
 import os, sys, glob, shutil, zlib
 from multiprocessing import Pool

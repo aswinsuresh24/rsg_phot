@@ -15,7 +15,7 @@ B. Absolute check. EE50 (and EE60) aperture fluxes of the isolated dolphot field
 Outputs, under data/dolphot/sn2026sqf/starbug/:
   sn2026sqf_miri_apcorr_check_stars.csv, sn2026sqf_miri_apcorr_check.csv, sn2026sqf_miri_apcorr_check.png
 
-Run from the repo root after the two scripts above:  python apcorr_check_2026sqf.py [--plots-only]
+Run from the repo root after the two scripts above:  python sn2026sqf/apcorr_check_2026sqf.py [--plots-only]
 '''
 import os, sys, glob
 from multiprocessing import Pool

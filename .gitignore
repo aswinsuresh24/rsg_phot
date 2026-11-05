@@ -1,5 +1,6 @@
 .DS_Store
 .ipynb_checkpoints/
+.claude/
 __pycache__/
 data/dolphot/
 sbi-logs/
@@ -8,6 +9,7 @@ examples/
 .vscode/
 jwstrsg-vault/
 2026sqf_tmp/
+sn2026sqf/data
 PKG-INFO
 *csv
 *md
@@ -39,3 +41,4 @@ spec.ipynb
 sbi.ipynb
 inference.ipynb
 *.ipynb
+sn2019ehk_stars.py
